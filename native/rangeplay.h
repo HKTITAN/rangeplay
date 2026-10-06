@@ -31,6 +31,7 @@ extern "C" {
 #define RP_IO_MAGIC 0x594c5052u
 #define RP_COMMAND_RING_MAGIC 0x43475052u
 #define RP_RECORD_RING_MAGIC 0x52525052u
+#define RP_AUDIO_RING_MAGIC 0x41505052u
 
 /* IO control block: header, slots, hint ring (all int32 words) */
 #define RP_IO_MAGIC_W 0
@@ -98,6 +99,17 @@ extern "C" {
 #define RP_RR_DROPPED_W 5
 #define RP_RR_HEADER_WORDS 8
 
+/* audio ring: interleaved float32 PCM frames */
+#define RP_AU_MAGIC_W 0
+#define RP_AU_CAP_W 1
+#define RP_AU_CHANNELS_W 2
+#define RP_AU_RATE_W 3
+#define RP_AU_WRITE_W 4
+#define RP_AU_READ_W 5
+#define RP_AU_UNDERRUNS_W 6
+#define RP_AU_PEAK_W 7
+#define RP_AU_HEADER_WORDS 8
+
 /* input events (record ring of RP_INPUT_WORDS words) */
 #define RP_INPUT_WORDS 8
 #define RP_IN_TYPE 0
@@ -150,6 +162,19 @@ void rp_records_release(void *ring);
 int32_t *rp_records_reserve(void *ring);
 void rp_records_commit(void *ring);
 
+/* ---- audio ring (one producer; the page's AudioWorklet consumes) ---- */
+size_t rp_audio_bytes(uint32_t cap_frames, uint32_t channels);
+/* cap_frames: a power of two. rate: Hz (the page's AudioContext runs at it). */
+void rp_audio_init(void *ring, uint32_t cap_frames, uint32_t channels, uint32_t rate);
+/* Frames written and not played yet. */
+uint32_t rp_audio_queued(void *ring);
+/* Writes up to n interleaved frames; never blocks. Returns the frames written (fewer when the ring is full). */
+uint32_t rp_audio_write(void *ring, const float *frames, uint32_t n);
+
+/* Allocates memory for one of the structures above: 64-byte aligned, the size rounded up to a multiple of 64 (C11
+ * aligned_alloc returns NULL for any other size). NULL when out of memory. */
+void *rp_alloc(size_t bytes);
+
 /* Addresses sent to the IO worker are offsets in linear memory. Native builds (tests) set the base they count from. */
 void rp_set_memory_base(const void *base);
 
@@ -188,6 +213,20 @@ static void rp__notify(int32_t *addr) {
   (void)addr;
 }
 #endif
+
+#include <stdlib.h>
+#if defined(_WIN32) && !defined(__wasm__)
+#include <malloc.h> /* native Windows builds (tests): no C11 aligned_alloc */
+#endif
+
+void *rp_alloc(size_t bytes) {
+  size_t n = (bytes + 63) & ~(size_t)63;
+#if defined(_WIN32) && !defined(__wasm__)
+  return _aligned_malloc(n, 64);
+#else
+  return aligned_alloc(64, n);
+#endif
+}
 
 static const uint8_t *rp__base = 0;
 static RP__TLS int32_t rp__slot = -1;        /* word index of this thread's IO slot */
@@ -367,6 +406,39 @@ void rp_records_commit(void *ring) {
   int32_t *h = (int32_t *)ring;
   RP__ADD(&h[RP_RR_WRITE_W], 1);
   rp__notify(&h[RP_RR_WRITE_W]);
+}
+
+size_t rp_audio_bytes(uint32_t cap_frames, uint32_t channels) {
+  return (size_t)(RP_AU_HEADER_WORDS + cap_frames * channels) * 4;
+}
+
+void rp_audio_init(void *ring, uint32_t cap_frames, uint32_t channels, uint32_t rate) {
+  int32_t *h = (int32_t *)ring;
+  for (int i = 0; i < RP_AU_HEADER_WORDS; i++) h[i] = 0;
+  h[RP_AU_CAP_W] = (int32_t)cap_frames;
+  h[RP_AU_CHANNELS_W] = (int32_t)channels;
+  h[RP_AU_RATE_W] = (int32_t)rate;
+  RP__STORE(&h[RP_AU_MAGIC_W], (int32_t)RP_AUDIO_RING_MAGIC);
+}
+
+uint32_t rp_audio_queued(void *ring) {
+  int32_t *h = (int32_t *)ring;
+  return (uint32_t)RP__LOAD(&h[RP_AU_WRITE_W]) - (uint32_t)RP__LOAD(&h[RP_AU_READ_W]);
+}
+
+uint32_t rp_audio_write(void *ring, const float *frames, uint32_t n) {
+  int32_t *h = (int32_t *)ring;
+  uint32_t cap = (uint32_t)h[RP_AU_CAP_W], ch = (uint32_t)h[RP_AU_CHANNELS_W];
+  float *data = (float *)(h + RP_AU_HEADER_WORDS);
+  uint32_t w = (uint32_t)RP__LOAD(&h[RP_AU_WRITE_W]);
+  uint32_t space = cap - (w - (uint32_t)RP__LOAD(&h[RP_AU_READ_W]));
+  if (n > space) n = space;
+  for (uint32_t i = 0; i < n; i++) {
+    float *dst = data + ((w + i) & (cap - 1)) * ch;
+    for (uint32_t c = 0; c < ch; c++) dst[c] = frames[i * ch + c];
+  }
+  RP__STORE(&h[RP_AU_WRITE_W], (int32_t)(w + n));
+  return n;
 }
 
 #endif /* RANGEPLAY_IMPLEMENTED */

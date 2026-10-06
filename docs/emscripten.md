@@ -41,11 +41,12 @@ void *rp_ctl, *rp_gpu, *rp_input;
 /* Called from the engine worker before main(): allocates the structures, returns their addresses. */
 EMSCRIPTEN_KEEPALIVE uint32_t *rp_setup(void) {
   static uint32_t offsets[3];
-  rp_ctl = aligned_alloc(64, rp_io_bytes(16, 1024));      /* 16 slots: at least one per thread that reads */
+  rp_ctl = rp_alloc(rp_io_bytes(16, 1024));            /* 16 slots: at least one per thread that reads */
+  rp_gpu = rp_alloc(rp_ring_bytes(8u << 20));         /* a record may use up to half the ring */
+  rp_input = rp_alloc(rp_records_bytes(256, RP_INPUT_WORDS));
+  if (!rp_ctl || !rp_gpu || !rp_input) return NULL;
   rp_io_init(rp_ctl, 16, 1024);
-  rp_gpu = aligned_alloc(64, rp_ring_bytes(8u << 20));   /* a record may use up to half the ring */
   rp_ring_init(rp_gpu, 8u << 20);
-  rp_input = aligned_alloc(64, rp_records_bytes(256, RP_INPUT_WORDS));
   rp_records_init(rp_input, 256, RP_INPUT_WORDS);
   offsets[0] = (uint32_t)(uintptr_t)rp_ctl;
   offsets[1] = (uint32_t)(uintptr_t)rp_gpu;
@@ -54,7 +55,10 @@ EMSCRIPTEN_KEEPALIVE uint32_t *rp_setup(void) {
 }
 ```
 
-With `-sMEMORY64`, return 64-bit offsets; the protocol carries 64-bit addresses.
+Allocate with `rp_alloc`, not `aligned_alloc` directly. C11's `aligned_alloc` returns NULL when the size is not a
+multiple of the alignment, and Emscripten's follows the rule. A ring then initialised at address 0 lands on top of the
+module's static data. The Doom port shipped that way for a day before a sanitizer build caught it (see the pitfalls
+below). With `-sMEMORY64`, return 64-bit offsets; the protocol carries 64-bit addresses.
 
 ## 3. The engine worker
 
@@ -137,7 +141,24 @@ for (int32_t *ev; (ev = rp_records_peek(rp_input)); rp_records_release(rp_input)
 }
 ```
 
-## 7. Boot set and background install
+## 7. Audio
+
+Allocate an audio ring next to the others and mix into it once per tick or frame. Keep a target amount queued
+(rangeplay's worklet takes 128 frames per render quantum):
+
+```c
+rp_audio = rp_alloc(rp_audio_bytes(16384, 2));
+rp_audio_init(rp_audio, 16384, 2, 48000);
+/* ... each tick: */
+uint32_t queued = rp_audio_queued(rp_audio);
+if (queued < 4096) rp_audio_write(rp_audio, mix(4096 - queued), 4096 - queued);
+```
+
+Pass its address as `audioOffset` to `attachWasm`. The page starts playback at the first user gesture.
+[`platform.c`](../examples/freedoom/platform.c) has a complete 8-channel sound-effects mixer that loads sounds from the
+WAD through `rp_read` the first time each plays.
+
+## 8. Boot set and background install
 
 Load the game with `record: true`, play to where you want a fresh visit to land (the title screen, the first level),
 and save `game.takeRecording()` as the boot set. With `io: { backgroundFill: ['data.pak'] }` the rest of those files
@@ -145,6 +166,11 @@ then download at low priority, so the game ends up fully installed while it is p
 
 ## Pitfalls we hit
 
+- **`aligned_alloc` with a size that is not a multiple of the alignment returns NULL.** Structures set up at address 0
+  overwrite the module's static data (from address 1024 up), and the program fails later, far away. In the Doom port
+  that showed up as a `function signature mismatch`, because the audio ring had overwritten function-pointer tables.
+  `rp_alloc` rounds the size up. A build with `-fsanitize=undefined` (`DEBUG_WASM=ubsan` for the example's build script)
+  reports the store to the null pointer at its source line.
 - **`emscripten_get_now()` counts from the Unix epoch in threaded builds.** It is far beyond 2^32 milliseconds, so a
   `(uint32_t)` cast saturates and the engine's clock never moves. Subtract the value from the first call.
 - **A stalled engine is easiest to find in shared memory.** `await game.debug()` shows each IO slot (idle, or waiting

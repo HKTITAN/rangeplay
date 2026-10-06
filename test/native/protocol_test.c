@@ -177,6 +177,22 @@ int main(void) {
   }
   CHECK(rp_records_peek(rr) == 0, "record ring: not empty");
 
+  /* audio ring: written in pieces, read back in order; rp_alloc rounds sizes up (C11 aligned_alloc does not) */
+  void *au = rp_alloc(rp_audio_bytes(256, 2));
+  CHECK(au != 0 && ((uintptr_t)au & 63) == 0, "rp_alloc: not 64-byte aligned");
+  rp_audio_init(au, 256, 2, 48000);
+  float frames[2 * 100];
+  uint32_t total = 0;
+  for (int round = 0; round < 3; round++) {
+    for (int i = 0; i < 100; i++) frames[i * 2] = frames[i * 2 + 1] = (float)(total + (uint32_t)i);
+    total += rp_audio_write(au, frames, 100);
+  }
+  CHECK(total == 256, "audio ring: wrote %u frames into a 256-frame ring", total);
+  CHECK(rp_audio_queued(au) == 256, "audio ring: %u queued", rp_audio_queued(au));
+  CHECK(rp_audio_write(au, frames, 1) == 0, "audio ring: wrote into a full ring");
+  float *data = (float *)((int32_t *)au + RP_AU_HEADER_WORDS);
+  for (uint32_t i = 0; i < 256; i++) CHECK(data[i * 2] == (float)i, "audio ring: frame %u", i);
+
   if (failures) {
     printf("FAILED: %d check(s)\n", failures);
     return 1;

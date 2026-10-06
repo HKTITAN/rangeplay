@@ -14,10 +14,10 @@ const Module = await createDoom({
   onAbort: (what) => postToPage({ error: 'the engine stopped: ' + what }),
 });
 
-// rp_setup allocates the IO control block, the command ring and the input ring in the engine's memory.
+// rp_setup allocates the IO control block, the command ring, the input ring and the audio ring in the engine's memory.
 const at = Module._rp_setup() >>> 2;
-const [ioOffset, gpuOffset, inputOffset] = Module.HEAPU32.subarray(at, at + 3);
-attachWasm(start, { memory: Module.wasmMemory, ioOffset, gpuOffset, inputOffset });
+const [ioOffset, gpuOffset, inputOffset, audioOffset] = Module.HEAPU32.subarray(at, at + 4);
+attachWasm(start, { memory: Module.wasmMemory, ioOffset, gpuOffset, inputOffset, audioOffset });
 
 const files = new FileTable(start.manifest, start.manifestUrl);
 for (let id = 0; id < files.count; id++) {

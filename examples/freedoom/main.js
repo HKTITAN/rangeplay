@@ -32,6 +32,8 @@ try {
     persist: !q.has('nostore'),
     prefer2d: q.has('2d'),
     pacing: q.has('timer') ? 'timer' : 'raf',
+    pointerLock: true,   // click the game to aim with the mouse; Esc gives the pointer back
+    fineTimers: true,    // the engine sleeps 1 ms at a time between tics: keep Chrome on Windows from making that 15.6 ms
     onStats: (s) => {
       const installed = s.fill.state === 'done' ? ', installed' : s.fill.runs ? `, installing ${Math.round((100 * s.fill.done) / s.fill.runs)}%` : '';
       $('net').textContent = `${mb(s.bytesFetched)} of ${mb(total)}${installed}`;

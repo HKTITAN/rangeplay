@@ -134,6 +134,31 @@ consumer.
 
 Record `i` starts at word `8 + (i mod CAP) * RECORD_WORDS`.
 
+### Audio ring
+
+The engine writes interleaved float32 PCM. An AudioWorklet on the page (`src/audio-worklet.js`) plays it in render
+quanta of 128 frames.
+
+```
+header  8 words
+data    CAP x CHANNELS float32
+```
+
+| Header word | Name      |                                                                                 |
+| ----------- | --------- | ------------------------------------------------------------------------------- |
+| 0           | MAGIC     | `0x41505052` ("RPPA")                                                           |
+| 1           | CAP       | frames, a power of two                                                          |
+| 2           | CHANNELS  |                                                                                 |
+| 3           | RATE      | Hz; the page's AudioContext runs at this rate                                   |
+| 4           | WRITE     | frames written (atomic)                                                         |
+| 5           | READ      | frames played (atomic)                                                          |
+| 6           | UNDERRUNS | render quanta that found fewer frames than they needed (counted after the first write) |
+| 7           | PEAK      | the loudest sample played since the last read, x 1,000,000; the reader swaps it to 0 |
+
+Frame `i` starts at float `8 + (i mod CAP) * CHANNELS`. The writer never blocks: `rp_audio_write` writes what fits.
+Engines usually keep a target amount queued, about 50 to 100 ms, and top it up once per tick or frame. Browsers start
+audio only after a user gesture, so the ring fills first and playback begins at the first click or key press.
+
 ### Input events
 
 Input events use a record ring with 8-word records. The page writes them, never blocking: when the ring is full the
@@ -145,7 +170,7 @@ event is dropped and DROPPED counts it. Float fields hold float32 bit patterns.
 | 1    | code   | index in `KEY_CODES`   | button                             | 0              | 0                  |
 | 2, 3 | x, y   |                        | position in CSS pixels             | position       | width, height      |
 | 4, 5 | dx, dy |                        | movement                           | delta (pixels) | dx: device pixel ratio |
-| 6    | mods   | shift 1, ctrl 2, alt 4, meta 8 | same, plus `buttons << 8`  | modifiers      |                    |
+| 6    | mods   | shift 1, ctrl 2, alt 4, meta 8, pointer locked 16 | same, plus `buttons << 8` | modifiers | |
 | 7    | time   | `performance.now()` of the page, ms (float32) |                    |                |                    |
 
 Type 8 (blur) means the page lost focus: treat every key as released. `KEY_CODES` (in `layout.js`) lists

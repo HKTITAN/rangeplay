@@ -12,7 +12,7 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const root = join(here, '..', '..');
 const DOOMGENERIC = { repo: 'https://github.com/ozkl/doomgeneric.git', commit: 'dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284' };
 
-// doomgeneric's own Emscripten makefile, minus its SDL front end and stdio WAD reader (platform.c replaces both)
+// doomgeneric's own Emscripten makefile, minus its SDL front end, SDL sound and stdio WAD reader (platform.c replaces them)
 const SOURCES = `dummy am_map doomdef doomstat dstrings d_event d_items d_iwad d_loop d_main d_mode d_net f_finale f_wipe
   g_game hu_lib hu_stuff info i_cdmus i_endoom i_joystick i_scale i_sound i_system i_timer memio m_argv m_bbox m_cheat
   m_config m_controls m_fixed m_menu m_misc m_random p_ceilng p_doors p_enemy p_floor p_inter p_lights p_map p_maputl
@@ -44,8 +44,9 @@ await mkdir(out, { recursive: true });
 const args = [
   ...SOURCES.map((s) => join(dg, s + '.c')),
   join(here, 'platform.c'),
-  '-I', dg, '-I', join(root, 'native'),
-  '-O2', '-w',
+  '-I', dg, '-I', join(root, 'native'), '-I', join(here, 'compat'),
+  '-DFEATURE_SOUND',                           // sound effects through platform.c's mixer and rangeplay's audio ring
+  '-O2', '-w', ...(process.env.DEBUG_WASM ? ['--profiling-funcs', '-sASSERTIONS=1', ...(process.env.DEBUG_WASM === 'ubsan' ? ['-fsanitize=undefined', '-g'] : [])] : []),
   '-pthread', '-sPROXY_TO_PTHREAD',            // main() runs in a pthread, where rp_read may block
   '-sMODULARIZE', '-sEXPORT_ES6', '-sEXPORT_NAME=createDoom',
   '-sENVIRONMENT=web,worker',                  // loaded inside rangeplay's engine worker

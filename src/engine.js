@@ -14,7 +14,7 @@ import {
   SLOT_LEN, SLOT_OFF_HI, SLOT_OFF_LO, SLOT_REQUESTED, SLOT_RESULT, SLOT_STATE, alignUp, initIoControl, ioControlBytes,
   ioHintWord, ioSlotWord,
 } from './shared/layout.js';
-import { CommandRing, RecordRing } from './shared/ring.js';
+import { AudioRing, CommandRing, RecordRing } from './shared/ring.js';
 import { FileTable } from './shared/manifest.js';
 
 export class IoError extends Error {
@@ -207,14 +207,16 @@ const startMessage = typeof self !== 'undefined' && typeof self.addEventListener
   : null;
 
 // Sets up the engine's shared memory and connects it to the runtime's workers. Call once, in the engine worker that
-// host.js started. Layout of the SharedArrayBuffer: [IO control block][command ring][input ring][heap].
-export async function connect({ heapBytes = 64 * 1048576, ioSlots = 16, hintCap = 1024, gpuRingBytes = 4 * 1048576, inputCap = 256, maxFramesInFlight = 2 } = {}) {
+// host.js started. Layout of the SharedArrayBuffer: [IO control block][command ring][input ring][audio ring][heap].
+// audio: { frames, channels, rate } gives the engine an audio ring (rt.audio.write(interleavedFloat32)), or null.
+export async function connect({ heapBytes = 64 * 1048576, ioSlots = 16, hintCap = 1024, gpuRingBytes = 4 * 1048576, inputCap = 256, maxFramesInFlight = 2, audio = null } = {}) {
   if (!startMessage) throw new Error('connect() runs in the engine worker that host.js starts');
   const start = await startMessage;
   const ioOffset = 0;
   const gpuOffset = alignUp(ioOffset + ioControlBytes(ioSlots, hintCap), 64);
   const inputOffset = alignUp(gpuOffset + CommandRing.bytes(gpuRingBytes), 64);
-  const heapOffset = alignUp(inputOffset + RecordRing.bytes(inputCap, INPUT_WORDS), 4096);
+  const audioOffset = alignUp(inputOffset + RecordRing.bytes(inputCap, INPUT_WORDS), 64);
+  const heapOffset = alignUp(audioOffset + (audio ? AudioRing.bytes(audio.frames, audio.channels) : 0), 4096);
   const buffer = new SharedArrayBuffer(heapOffset + heapBytes);
 
   initIoControl(buffer, ioOffset, ioSlots, hintCap);
@@ -223,6 +225,10 @@ export async function connect({ heapBytes = 64 * 1048576, ioSlots = 16, hintCap 
   start.ioPort.postMessage({ type: 'attach', memory: buffer, controlOffset: ioOffset });
   start.gpuPort.postMessage({ type: 'attach', memory: buffer, ringOffset: gpuOffset });
   self.postMessage({ type: 'rangeplay:input', memory: buffer, ringOffset: inputOffset });
+  if (audio) {
+    AudioRing.init(buffer, audioOffset, audio.frames, audio.channels, audio.rate);
+    self.postMessage({ type: 'rangeplay:audio', memory: buffer, ringOffset: audioOffset });
+  }
 
   const files = new FileTable(start.manifest, start.manifestUrl);
   return {
@@ -232,6 +238,7 @@ export async function connect({ heapBytes = 64 * 1048576, ioSlots = 16, hintCap 
     io: new IoClient(buffer, ioOffset),
     gpu: new GpuClient(buffer, gpuOffset, { maxFramesInFlight }),
     input: new InputClient(buffer, inputOffset),
+    audio: audio ? new AudioRing(buffer, audioOffset) : null,
     heap: new BumpHeap(heapOffset, heapBytes),
     // What another engine thread needs to make its own IoClient (post it to that worker).
     shared: () => ({ buffer, ioOffset, manifest: start.manifest, manifestUrl: start.manifestUrl }),
@@ -250,10 +257,15 @@ export function waitForStart() {
 
 // Hands the engine's shared memory (a shared WebAssembly.Memory, or its SharedArrayBuffer when it cannot grow) and
 // the addresses of the structures the engine set up with rp_io_init / rp_ring_init / rp_records_init to the runtime.
-export function attachWasm(start, { memory, ioOffset, gpuOffset = null, inputOffset = null }) {
+export function attachWasm(start, { memory, ioOffset, gpuOffset = null, inputOffset = null, audioOffset = null }) {
+  // Address 0 is where a failed allocation would have put a structure (on top of the module's static data).
+  for (const [name, at] of Object.entries({ ioOffset, gpuOffset, inputOffset, audioOffset })) {
+    if (at === 0) throw new Error(name + ' is 0: the engine could not allocate it (use rp_alloc, and check for NULL)');
+  }
   start.ioPort.postMessage({ type: 'attach', memory, controlOffset: ioOffset });
   if (gpuOffset !== null) start.gpuPort.postMessage({ type: 'attach', memory, ringOffset: gpuOffset });
   if (inputOffset !== null) self.postMessage({ type: 'rangeplay:input', memory, ringOffset: inputOffset });
+  if (audioOffset !== null) self.postMessage({ type: 'rangeplay:audio', memory, ringOffset: audioOffset });
 }
 
 // Tells the page something from an engine worker (the host's onMessage callback receives it).

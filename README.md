@@ -70,6 +70,9 @@ flowchart LR
 - **Content-addressed data.** Every file is stored under its hash, so URLs never change their bytes. CDNs and
   browsers cache them forever, identical files are stored once, and an update only invalidates the files that changed.
   The cache on the player's device is keyed the same way, so it survives updates.
+- **Audio and input through shared memory too.** The engine's mixer writes PCM into a ring that an AudioWorklet plays.
+  The page writes keyboard, mouse and resize events into a ring the engine polls, with optional pointer lock for
+  mouse look.
 - **A GPU worker owns WebGPU.** WebGPU is asynchronous and its objects cannot be shared between threads. The engine
   writes commands into a ring in shared memory and the GPU worker executes them, paced to the display.
 
@@ -150,6 +153,15 @@ rp_hint(ctl, file_id, next_offset, next_len, 0);
 
 [docs/emscripten.md](docs/emscripten.md) walks through an Emscripten build, step by step, using the Freedoom port.
 
+**Options for real games.**
+- `pointerLock: true`: a click locks the pointer, for mouse look.
+- `fineTimers: true`: a workaround for Chrome on Windows, which rounds short `Atomics.wait` timeouts up to the 15.6 ms
+  system tick.
+- `onStall(info)`: called with `game.debug()` if loading stops making progress.
+- `game.audio()`: the audio ring's level and underruns.
+
+An engine gets an audio ring with `connect({ audio: { frames, channels, rate } })` in JavaScript, or `rp_audio_*` in C.
+
 **4. Record a boot set.** Load the game with `record: true` and play the opening. Save
 `game.takeRecording()` as JSON. To have the rest of the game download in the background after the boot set, pass
 `io: { backgroundFill: ['game.pak'] }`. To merge several recordings:
@@ -172,6 +184,7 @@ configuration for that host; [docs/deploying.md](docs/deploying.md) has the deta
 | OPFS sync access handles                | The persistent cache                      | In-memory cache, plus the browser's HTTP cache             |
 | WebGPU                                  | Your engine's renderer                    | Your handlers decide; the demo falls back to a 2D canvas   |
 | `Atomics.waitAsync`                     | Waking the IO and GPU workers             | They poll with a short backoff                             |
+| AudioWorklet                            | Playing the engine's audio ring           | Silent                                                     |
 | Web Locks                               | One tab owning the cache                  | No multi-tab protection                                    |
 
 Tested so far: Chromium 152 on Windows (both demos, on WebGPU and on the 2D fallback) and Node 20 to 26 (the test
@@ -189,7 +202,7 @@ This is version 0.1, and experimental. What is tested:
 
 Not done yet:
 
-- Audio. The Freedoom example is silent: sound needs an AudioWorklet fed from the engine's mixer, like the GPU worker.
+- Music in the Freedoom example. Its sound effects play; Doom's music is MIDI and needs a synthesizer.
 - Store compaction. Space held by old versions is only reclaimed when more than half of a large store is dead.
 - Bundling small files into packs, per-block compression, and offline start (a service worker for the page itself).
 

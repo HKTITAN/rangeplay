@@ -9,6 +9,7 @@ export const LAYOUT_VERSION = 1;
 export const IO_MAGIC = 0x594c5052;            // "RPLY"
 export const COMMAND_RING_MAGIC = 0x43475052;  // "RPGC"
 export const RECORD_RING_MAGIC = 0x52525052;   // "RPRR"
+export const AUDIO_RING_MAGIC = 0x41505052;    // "RPPA"
 
 // ---- IO control block -------------------------------------------------------------------------------------------------
 // header (IO_HEADER_WORDS words), then IO slots (IO_SLOT_WORDS each), then the hint ring (IO_HINT_WORDS per entry).
@@ -117,6 +118,23 @@ export function recordRingBytes(cap, recordWords) {
   return (RR_HEADER_WORDS + cap * recordWords) * 4;
 }
 
+// ---- audio ring: interleaved float32 PCM frames, written by the engine, played by an AudioWorklet ----------------------
+// header (AU_HEADER_WORDS words), then cap * channels float32 samples.
+
+export const AU_MAGIC_W = 0;
+export const AU_CAP_W = 1;                // frames, a power of two
+export const AU_CHANNELS_W = 2;
+export const AU_RATE_W = 3;               // sample rate, Hz
+export const AU_WRITE_W = 4;              // frames written (monotonic, wraps at 2^32)
+export const AU_READ_W = 5;               // frames played
+export const AU_UNDERRUNS_W = 6;          // render quanta that found too few frames
+export const AU_PEAK_W = 7;               // loudest sample played since the last stats() read, x 1e6 (a level meter)
+export const AU_HEADER_WORDS = 8;
+
+export function audioRingBytes(cap, channels) {
+  return (AU_HEADER_WORDS + cap * channels) * 4;
+}
+
 // ---- input events: a record ring of INPUT_WORDS-word records, written by the page, read by the engine -------------------
 
 export const INPUT_WORDS = 8;
@@ -126,7 +144,7 @@ export const IN_X = 2;         // float32: pointer x in CSS pixels / resize widt
 export const IN_Y = 3;         // float32: pointer y / resize height
 export const IN_DX = 4;        // float32: movement / wheel delta x / resize: device pixel ratio
 export const IN_DY = 5;        // float32: movement / wheel delta y
-export const IN_MODS = 6;      // bit 0 shift, 1 ctrl, 2 alt, 3 meta; pointer events: buttons << 8
+export const IN_MODS = 6;      // bit 0 shift, 1 ctrl, 2 alt, 3 meta, 4 pointer locked; pointer events: buttons << 8
 export const IN_TIME = 7;      // float32: event time in ms (performance.now() clock of the page)
 
 export const EV_KEY_DOWN = 1;

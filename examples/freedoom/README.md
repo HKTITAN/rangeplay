@@ -9,7 +9,9 @@ This is the example to read if you are bringing a native engine to rangeplay. Th
 Everything rangeplay-specific is in one file:
 
 - **[platform.c](platform.c):** the engine's platform layer. It provides the WAD file class (open and read through
-  `rp_read`), frame output through the command ring, key input from the input ring, and the clock.
+  `rp_read`), frame output through the command ring, sound effects through the audio ring, keyboard and
+  pointer-locked mouse input from the input ring, and the clock. The sound effects come from an 8-channel 48 kHz
+  mixer; sounds load from the WAD the first time they play. There is no music: Doom's music is MIDI.
 - **[engine.js](engine.js):** the engine worker. It loads the Emscripten module, hands its memory to rangeplay's
   workers (`attachWasm`), registers the manifest's files with the engine, and calls `main()`.
 - **[gpu.js](gpu.js):** uploads each frame to a texture and draws it at 4:3 (WebGPU, or a 2D canvas).
@@ -47,10 +49,17 @@ node examples/freedoom/build-wasm.js
 This rebuilds `wasm/doom.js` and `wasm/doom.wasm` (needs Emscripten; set `EMSDK`). It fetches doomgeneric at a pinned
 commit and compiles it with `platform.c`. The output is committed, so the demo builds without Emscripten.
 
-## Two lessons from the port
+## Lessons from the port
 
+- **`aligned_alloc` returns NULL when the size is not a multiple of the alignment.** The input ring (8,224 bytes) and
+  later the audio ring were set up at address 0, on top of the module's static data. Things worked by luck until the
+  audio ring overwrote a function table and the engine died with `function signature mismatch`. A build with
+  `-fsanitize=undefined` (`DEBUG_WASM=ubsan node examples/freedoom/build-wasm.js`) pointed straight at the null store.
+  `rp_alloc` rounds the size up, and `attachWasm` now refuses address 0.
 - **`emscripten_get_now()` counts from the Unix epoch in threaded builds.** Cast to a 32-bit millisecond counter, it
   saturates, so the engine's clock stops and it waits forever for its first tic. Count from the first call instead.
+- **Check the sound, not just the samples.** `game.audio()` reports frames played, underruns and the peak level that
+  reached the worklet.
 - **Find hangs with `game.debug()`.** It shows what the IO worker and GPU worker see in shared memory: whether an
   engine thread waits on a read, and whether frames are being submitted and drawn.
 

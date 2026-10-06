@@ -116,8 +116,27 @@ engine to the display: `beginFrame()` blocks while two frames are in flight.
 engine's renderer and its handler module (see `examples/tile-world/gpu.js`). Translating an engine's renderer into
 such commands is the real porting work, and rangeplay does not do it for you.
 
+**Audio is a ring an AudioWorklet drains.** The engine's mixer runs wherever the engine runs and writes float PCM into
+a ring in shared memory. An AudioWorklet copies 128 frames per render quantum from that ring to the speakers. There
+are no messages and no copies through the page, and the worklet never waits: if the ring runs short, it plays silence
+and counts an underrun. The engine keeps a modest amount queued, about 85 ms in the Doom example, so latency stays low
+and a slow frame does not starve the speakers. Browsers allow audio only after a user gesture, so the host creates the
+AudioContext on the first click or key press. A level meter in the ring header shows whether sound is actually
+reaching the worklet, not just samples.
+
 **Input goes through shared memory too.** The page writes DOM events into a ring of fixed-size records and never
 blocks: if the ring is full, the event is dropped and counted. The engine polls the ring once per frame.
+
+**A stall watchdog.** Before the first frame, the host compares the IO statistics every 2 s. If nothing has changed for
+`stallMs` (30 s by default), it calls `onStall` with `game.debug()`: what each engine thread is waiting for and where
+the command ring stands. A tab that runs out of memory dies without a word, but a stalled or deadlocked one can still
+report.
+
+**Short waits on Windows.** Chrome on Windows rounds an `Atomics.wait` timeout up to the system timer tick, 15.6 ms,
+unless the process has a short timer pending. We measured a 1 ms wait taking 15.4 ms on Chromium 152. An engine that
+sleeps 1 ms at a time then runs in 15.6 ms steps. `fineTimers: true` keeps an empty 1 ms interval running on the
+page, a known workaround. It is off by default because it costs a little power, and we have not been able to confirm
+its effect in our own test setup, whose browser pane was hidden.
 
 ## What a port still needs
 

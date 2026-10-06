@@ -13,12 +13,16 @@
 // Other options: record (collect a boot set), persist: false (no OPFS cache), prefer2d (skip WebGPU),
 // pacing: 'timer' (keep running at ~60 fps while the page is hidden; default 'raf' pauses with the page),
 // io: { ...IoCore options, maxStoreBytes, memoryCacheBytes, backgroundFill: [paths] or true (download the rest of the
-// game at low priority after the boot set) }, engineOptions (passed to the engine worker in its start message).
+// game at low priority after the boot set) }, engineOptions (passed to the engine worker in its start message),
+// pointerLock (a click on the canvas locks the pointer: raw mouse movement for camera control), audio: false (ignore an
+// engine's audio ring), fineTimers (keep a 1 ms timer pending on the page: Chrome on Windows otherwise rounds short
+// Atomics.wait timeouts in engine threads up to the 15.6 ms system tick), stallMs + onStall (called with debug() when
+// nothing has happened for that long before the first frame; default 30 s).
 
 import {
   EV_BLUR, EV_KEY_DOWN, EV_KEY_UP, EV_POINTER_DOWN, EV_POINTER_MOVE, EV_POINTER_UP, EV_RESIZE, EV_WHEEL, keyCodeIndex,
 } from './shared/layout.js';
-import { RecordRing } from './shared/ring.js';
+import { AudioRing, RecordRing } from './shared/ring.js';
 import { FileTable } from './shared/manifest.js';
 
 export class RangeplayError extends Error {
@@ -139,8 +143,69 @@ export async function start(opts) {
     if (m?.type === 'rangeplay:input') {
       input = new RecordRing(m.memory.buffer ?? m.memory, m.ringOffset);
       pushResize();
+    } else if (m?.type === 'rangeplay:audio') {
+      if (opts.audio !== false) audio.offer(m.memory, m.ringOffset);
     } else if (m?.type === 'rangeplay:app') emit('onMessage', m.message);
   };
+
+  // ---- audio: the engine's PCM ring, played by an AudioWorklet once the page has had a user gesture ----
+  const audio = {
+    ring: null, ctx: null, gesture: false, starting: false,
+    offer(memory, ringOffset) {
+      this.ring = { memory, ringOffset, info: new AudioRing(memory.buffer ?? memory, ringOffset) };
+      this.start();
+    },
+    async start() {
+      if (!this.ring || !this.gesture || this.ctx || this.starting) return;
+      this.starting = true;
+      try {
+        const { memory, ringOffset, info } = this.ring;
+        const ctx = new AudioContext({ sampleRate: info.rate, latencyHint: 'interactive' });
+        await ctx.audioWorklet.addModule(new URL('./audio-worklet.js', import.meta.url));
+        const node = new AudioWorkletNode(ctx, 'rangeplay-audio', {
+          numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [info.channels], processorOptions: { memory, ringOffset },
+        });
+        node.connect(ctx.destination);
+        await ctx.resume();
+        this.ctx = ctx;
+        emit('onLog', '[audio] playing at ' + ctx.sampleRate + ' Hz');
+      } catch (e) {
+        emit('onLog', '[audio] could not start: ' + e.message);
+      } finally {
+        this.starting = false;
+      }
+    },
+    onGesture() {
+      this.gesture = true;
+      if (this.ctx?.state === 'suspended') this.ctx.resume();
+      this.start();
+    },
+    stats() {
+      return this.ring ? { ...this.ring.info.stats(), state: this.ctx?.state ?? 'waiting for a click or key press' } : null;
+    },
+  };
+  const gestureListener = () => audio.onGesture();
+  for (const type of ['pointerdown', 'keydown']) addEventListener(type, gestureListener, { capture: true });
+
+  // ---- optional: a 1 ms timer that keeps Chrome on Windows from rounding short waits up to the 15.6 ms tick ----
+  const fineTimer = opts.fineTimers ? setInterval(() => {}, 1) : 0;
+
+  // ---- stall watchdog: nothing new from the engine (no read, no download, no frame) for stallMs before the first frame ----
+  let lastActivity = performance.now(), lastSeen = '';
+  const watchdog = setInterval(async () => {
+    if (state.firstFrameMs !== null) return clearInterval(watchdog);
+    const s = state.stats, seen = s ? s.reads + '/' + s.bytesFetched + '/' + s.fetchesActive : '';
+    if (seen !== lastSeen) {
+      lastSeen = seen;
+      lastActivity = performance.now();
+      return;
+    }
+    if (performance.now() - lastActivity < (opts.stallMs ?? 30000)) return;
+    lastActivity = performance.now();
+    const info = await controller.debug().catch((e) => ({ error: e.message }));
+    emit('onLog', '[host] no progress for ' + Math.round((opts.stallMs ?? 30000) / 1000) + ' s: ' + JSON.stringify(info));
+    emit('onStall', info);
+  }, 2000);
 
   // ---- input: DOM events into the input ring (never blocks: a full ring drops the event) ----
   const push = (type, code, x, y, dx, dy, mods) => {
@@ -158,7 +223,8 @@ export async function start(opts) {
     f[i + 7] = performance.now();
     input.commit();
   };
-  const mods = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+  const locked = () => document.pointerLockElement === canvas;
+  const mods = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0) | (locked() ? 16 : 0);
   const pos = (e) => {
     const r = canvas.getBoundingClientRect();
     return [e.clientX - r.left, e.clientY - r.top];
@@ -172,7 +238,10 @@ export async function start(opts) {
     [canvas, 'keyup', (e) => push(EV_KEY_UP, keyCodeIndex(e.code), 0, 0, 0, 0, mods(e))],
     [canvas, 'pointerdown', (e) => {
       canvas.focus();
-      canvas.setPointerCapture?.(e.pointerId);
+      if (opts.pointerLock && !locked()) {
+        // raw movement where the browser offers it (no OS acceleration)
+        canvas.requestPointerLock?.({ unadjustedMovement: true })?.catch?.(() => canvas.requestPointerLock());
+      } else if (!opts.pointerLock) canvas.setPointerCapture?.(e.pointerId);
       push(EV_POINTER_DOWN, e.button, ...pos(e), 0, 0, mods(e) | (e.buttons << 8));
     }],
     [canvas, 'pointerup', (e) => push(EV_POINTER_UP, e.button, ...pos(e), 0, 0, mods(e) | (e.buttons << 8))],
@@ -208,13 +277,17 @@ export async function start(opts) {
   const stop = async () => {
     ro.disconnect();
     for (const [target, name, fn, o] of listeners) target.removeEventListener(name, fn, o);
+    for (const type of ['pointerdown', 'keydown']) removeEventListener(type, gestureListener, { capture: true });
+    clearInterval(fineTimer);
+    clearInterval(watchdog);
+    audio.ctx?.close();
     engine.terminate();
     gpu.terminate();
     await Promise.race([ask(io, 'close', 'closed'), new Promise((r) => setTimeout(r, 1000))]);
     io.terminate();
   };
 
-  return {
+  const controller = {
     files,
     capabilities: caps,
     ready,                                   // resolves with { backend } once the GPU worker runs
@@ -222,6 +295,8 @@ export async function start(opts) {
     store: () => state.store,
     backend: () => state.backend,
     firstFrameMs: () => state.firstFrameMs,   // from start() to the first frame on screen
+    audio: () => audio.stats(),               // the engine's audio ring: rate, frames written and played, underruns
+    audioRing: () => audio.ring?.info ?? null, // the AudioRing itself (shared memory), for meters and visualisers
     // What the IO and GPU workers see in shared memory: for diagnosing an engine that stops (blocked on a read? on a
     // full command ring? on frame pacing?).
     debug: async () => ({
@@ -230,12 +305,15 @@ export async function start(opts) {
         gpuDebug.push(resolve);
         gpu.postMessage({ type: 'debug' });
       }),
+      audio: audio.stats(),
     }),
     // The reads seen so far (start with record: true): save it as bootset.json next to the manifest.
     takeRecording: () => ask(io, 'take-recording', 'recording').then((m) => m.bootset),
     // Stops everything and deletes this game's persistent cache. Reload the page afterwards.
     clearCache: async () => {
       ro.disconnect();
+      clearInterval(watchdog);
+      audio.ctx?.close();
       engine.terminate();
       gpu.terminate();
       await ask(io, 'clear', 'cleared');
@@ -243,4 +321,5 @@ export async function start(opts) {
     },
     stop,
   };
+  return controller;
 }

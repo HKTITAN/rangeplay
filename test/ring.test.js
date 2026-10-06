@@ -81,3 +81,30 @@ test('record ring: drops when full, keeps order', () => {
   }
   assert.equal(ring.peek(), -1);
 });
+
+test('audio ring: frames come out in order across wraps; underruns and the level meter are counted', async () => {
+  const { AudioRing } = await import('../src/shared/ring.js');
+  const buf = new SharedArrayBuffer(AudioRing.bytes(64, 2) + 8);
+  const ring = AudioRing.init(buf, 8, 64, 2, 48000);
+  const L = new Float32Array(48), R = new Float32Array(48);
+  let next = 0, expect = 0;
+  for (let round = 0; round < 50; round++) {
+    const frames = new Float32Array(2 * 40);
+    for (let i = 0; i < 40; i++) {
+      frames[i * 2] = ((next + i) % 100) / 100;
+      frames[i * 2 + 1] = -((next + i) % 100) / 100;
+    }
+    next += ring.write(frames);
+    const n = ring.readPlanar([L, R], 48);
+    for (let i = 0; i < n; i++, expect++) {
+      assert.equal(L[i], Math.fround((expect % 100) / 100));
+      assert.equal(R[i], Math.fround(-(expect % 100) / 100));
+    }
+    for (let i = n; i < 48; i++) assert.equal(L[i], 0);
+  }
+  assert.equal(expect, next);
+  const s = ring.stats();
+  assert.ok(s.underruns > 0, 'the reader asked for more than was written');
+  assert.ok(s.peak > 0.9 && s.peak <= 1);
+  assert.equal(ring.stats().peak, 0, 'stats() resets the meter');
+});
