@@ -7,12 +7,13 @@
 //     bootset: 'dist/bootset.json',              // optional: recorded reads to prefetch at once
 //     engine: new URL('./engine.js', import.meta.url),       // module worker that calls connect() from engine.js
 //     gpuHandlers: new URL('./gpu.js', import.meta.url),     // module the GPU worker imports (see gpu-worker.js)
-//     onStats: (s) => ..., onLog: (line) => ..., onMessage: (m) => ...,
+//     onStats: (s) => ..., onLog: (line) => ..., onMessage: (m) => ..., onFirstFrame: (ms) => ...,
 //   });
 //
 // Other options: record (collect a boot set), persist: false (no OPFS cache), prefer2d (skip WebGPU),
 // pacing: 'timer' (keep running at ~60 fps while the page is hidden; default 'raf' pauses with the page),
-// io: { ...IoCore options, maxStoreBytes, memoryCacheBytes }, engineOptions (passed to the engine's connect()).
+// io: { ...IoCore options, maxStoreBytes, memoryCacheBytes, backgroundFill: [paths] or true (download the rest of the
+// game at low priority after the boot set) }, engineOptions (passed to the engine worker in its start message).
 
 import {
   EV_BLUR, EV_KEY_DOWN, EV_KEY_UP, EV_POINTER_DOWN, EV_POINTER_MOVE, EV_POINTER_UP, EV_RESIZE, EV_WHEEL, keyCodeIndex,
@@ -51,6 +52,7 @@ export async function start(opts) {
   }
   if (!caps.offscreenCanvas) throw new RangeplayError('no-offscreen-canvas', 'This browser cannot hand a canvas to a worker (OffscreenCanvas).');
 
+  const t0 = performance.now();
   const { canvas } = opts;
   const emit = (name, ...args) => opts[name]?.(...args);
   const manifestUrl = new URL(opts.manifest, location.href).href;
@@ -64,7 +66,7 @@ export async function start(opts) {
   const gpu = new Worker(new URL('./gpu-worker.js', here), { type: 'module', name: 'rangeplay-gpu' });
   const engine = new Worker(new URL(opts.engine, location.href), { type: 'module', name: 'engine' });
 
-  const state = { stats: null, backend: null, store: null };
+  const state = { stats: null, backend: null, store: null, firstFrameMs: null };
   let resolveReady, rejectReady;
   const ready = new Promise((res2, rej) => {
     resolveReady = res2;
@@ -87,12 +89,15 @@ export async function start(opts) {
     if (m.type === 'ready') {
       state.backend = m.backend;
       resolveReady({ backend: m.backend });
-    } else if (m.type === 'log') emit('onLog', m.text);
+    } else if (m.type === 'first-frame') emit('onFirstFrame', (state.firstFrameMs = performance.now() - t0));
+    else if (m.type === 'debug') gpuDebug.shift()?.(m.state);
+    else if (m.type === 'log') emit('onLog', m.text);
     else if (m.type === 'error') onError(m.message);
   };
   for (const w of [io, gpu, engine]) w.onerror = (e) => onError((e.message || 'worker failed to load') + (e.filename ? ' (' + e.filename + ':' + e.lineno + ')' : ''));
 
   const waiters = new Map();
+  const gpuDebug = [];
   const ask = (worker, type, reply) => new Promise((resolve) => {
     if (!waiters.has(reply)) waiters.set(reply, []);
     waiters.get(reply).push(resolve);
@@ -216,6 +221,16 @@ export async function start(opts) {
     stats: () => state.stats,
     store: () => state.store,
     backend: () => state.backend,
+    firstFrameMs: () => state.firstFrameMs,   // from start() to the first frame on screen
+    // What the IO and GPU workers see in shared memory: for diagnosing an engine that stops (blocked on a read? on a
+    // full command ring? on frame pacing?).
+    debug: async () => ({
+      io: await ask(io, 'debug', 'debug').then((m) => m.state),
+      gpu: await new Promise((resolve) => {
+        gpuDebug.push(resolve);
+        gpu.postMessage({ type: 'debug' });
+      }),
+    }),
     // The reads seen so far (start with record: true): save it as bootset.json next to the manifest.
     takeRecording: () => ask(io, 'take-recording', 'recording').then((m) => m.bootset),
     // Stops everything and deletes this game's persistent cache. Reload the page afterwards.

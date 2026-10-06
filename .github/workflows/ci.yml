@@ -16,3 +16,15 @@ jobs:
       - run: npm test
       - run: npm run test:native
       - run: npm run demo:build -- --regions 2
+  freedoom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+      - run: node examples/freedoom/build-wasm.js
+      - run: node examples/freedoom/build.js

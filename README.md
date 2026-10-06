@@ -4,14 +4,15 @@
 data from any CDN while it plays. There are no game servers and no data-center GPUs, and nothing is video-encoded.
 The network carries game data once, then mostly serves cache hits.
 
-**[Try the demo](https://rangeplay.vercel.app)** (needs a current Chromium-based browser for WebGPU; others fall back to
-a 2D canvas).
+**[Try the demos](https://rangeplay.vercel.app)** (best in a current Chromium-based browser, for WebGPU; others fall
+back to a 2D canvas).
 
-[![tile-world: a 144 MB landscape streamed into the browser as you look at it](docs/tile-world.jpg)](https://rangeplay.vercel.app)
+| [Freedoom](https://rangeplay.vercel.app/examples/freedoom/): a complete game | [tile-world](https://rangeplay.vercel.app/examples/tile-world/): a streamed world |
+| --- | --- |
+| [![Freedoom running in the browser, with rangeplay's streaming stats above it](docs/freedoom.jpg)](https://rangeplay.vercel.app/examples/freedoom/) | [![tile-world: a 144 MB landscape streamed as you look at it](docs/tile-world.jpg)](https://rangeplay.vercel.app/examples/tile-world/) |
+| The unmodified Doom engine, compiled from C with Emscripten, reads its 27.5 MB game through rangeplay. From an empty cache: first frame in **2.9 s** (85 s without a boot set), 5 of 2,600 start-up reads waited on the network, and the rest of the game installed in the background. | 144 MB of terrain in 36 archives. Tiles stream in as the camera moves, fetched ahead of it from read hints. The engine starts in 0.6 s on an empty cache, 2.4 s without a boot set, and 0.1 s on a return visit. |
 
-<sub>The demo, [`examples/tile-world`](examples/tile-world): 144 MB of terrain in 36 archive files. On the dev
-server's simulated network (40 ms latency, 3 MB/s per response) its engine starts in 0.6 s on an empty cache, 2.4 s
-without a boot set, and 0.1 s on a return visit. Tiles stream in as the camera moves.</sub>
+<sub>Timings from the dev server's simulated network: 40 ms latency, 3 MB/s per response, HTTP/1.1.</sub>
 
 ## This is not cloud gaming
 
@@ -87,9 +88,20 @@ npm run demo:build
 npm run demo
 ```
 
-Then open <http://localhost:8080/examples/tile-world/>. The dev server adds 40 ms of latency and caps each response
-at 3 MB/s, so streaming is visible. Use **Clear cache and reload** to see a first visit again; add `?nobootset=1` to
-see what the boot set saves. `npm test` runs the test suite; `npm run test:native` builds and runs the C protocol test.
+Then open <http://localhost:8080/examples/tile-world/>. For Freedoom, run `node examples/freedoom/build.js` first
+(it downloads the game, 24 MB), then open <http://localhost:8080/examples/freedoom/>. The engine is prebuilt in
+`examples/freedoom/wasm/`.
+
+The dev server adds 40 ms of latency and caps each response at 3 MB/s, so streaming is visible. Use **Clear cache** to
+see a first visit again, and add `?nobootset=1` to see what the boot set saves. `npm test` runs the test suite;
+`npm run test:native` builds and runs the C protocol test.
+
+## Examples
+
+- **[examples/freedoom](examples/freedoom):** a native engine ported to rangeplay. It covers the platform layer in C,
+  the Emscripten build, a recorded boot set and background install. Read this one if you have a C or C++ engine.
+- **[examples/tile-world](examples/tile-world):** an engine written in JavaScript. It covers archives with tables of
+  contents, a streamer thread, read hints, WebGPU drawing through the command ring, and the IO statistics.
 
 ## Using it
 
@@ -136,10 +148,11 @@ int64_t n = rp_read(ctl, file_id, offset, dst, len, 0);   /* same protocol, from
 rp_hint(ctl, file_id, next_offset, next_len, 0);
 ```
 
-[docs/emscripten.md](docs/emscripten.md) walks through an Emscripten build.
+[docs/emscripten.md](docs/emscripten.md) walks through an Emscripten build, step by step, using the Freedoom port.
 
 **4. Record a boot set.** Load the game with `record: true` and play the opening. Save
-`game.takeRecording()` as JSON, then merge several recordings:
+`game.takeRecording()` as JSON. To have the rest of the game download in the background after the boot set, pass
+`io: { backgroundFill: ['game.pak'] }`. To merge several recordings:
 
 ```bash
 npx rangeplay bootset merge rec1.json rec2.json -o dist/bootset.json
@@ -161,7 +174,8 @@ configuration for that host; [docs/deploying.md](docs/deploying.md) has the deta
 | `Atomics.waitAsync`                     | Waking the IO and GPU workers             | They poll with a short backoff                             |
 | Web Locks                               | One tab owning the cache                  | No multi-tab protection                                    |
 
-Tested so far: Chromium 152 on Windows (the demo on WebGPU and on the 2D fallback) and Node 26 (the test suite).
+Tested so far: Chromium 152 on Windows (both demos, on WebGPU and on the 2D fallback) and Node 20 to 26 (the test
+suite).
 Firefox and Safari are untested; reports are welcome.
 
 ## Status and limits
@@ -171,12 +185,11 @@ This is version 0.1, and experimental. What is tested:
 - The IO path end to end in Node: real HTTP, engine threads in `worker_threads`, both stores, 503 storms, stalled
   and misbehaving servers, damaged caches, cache reuse across sessions and versions, boot sets and hints.
 - The C header natively (6 threads, 18,000 reads; 200,000 ring records) with `-Wall -Wextra -Werror`.
-- The demo in Chromium.
+- A real engine through the C header: the Doom engine built with Emscripten in CI, and played in Chromium.
 
 Not done yet:
 
-- An Emscripten engine running end to end in CI. The protocol is tested from both sides, but the glue in
-  [docs/emscripten.md](docs/emscripten.md) has not run against a real build.
+- Audio. The Freedoom example is silent: sound needs an AudioWorklet fed from the engine's mixer, like the GPU worker.
 - Store compaction. Space held by old versions is only reclaimed when more than half of a large store is dead.
 - Bundling small files into packs, per-block compression, and offline start (a service worker for the page itself).
 

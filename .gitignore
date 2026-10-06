@@ -6,3 +6,6 @@ recordings/
 .DS_Store
 site/
 .vercel/
+
+.vercel
+examples/*/.build/

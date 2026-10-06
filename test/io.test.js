@@ -220,6 +220,29 @@ test('hints: an announced read is fetched before the engine asks for it', async 
   }
 });
 
+test('background fill installs whole files, then reads need no network', async () => {
+  const ds = await makeDataset(SIZES);
+  const srv = await startServer(ds.dist);
+  try {
+    const files = await loadFiles(srv.base);
+    const rt = startCore(files);
+    await rt.core.fill(['big.bin', 'sub/odd.bin', 'not-in-the-manifest.bin']);
+    const s = rt.core.snapshot();
+    assert.equal(s.fill.state, 'done');
+    assert.equal(s.fill.done, s.fill.runs);
+    assert.equal(s.fill.bytes, SIZES['big.bin'] + SIZES['sub/odd.bin']);
+    const before = srv.server.requests();
+    const reads = [[files.id('big.bin'), 0, SIZES['big.bin']], [files.id('sub/odd.bin'), 0, SIZES['sub/odd.bin']]];
+    check(await readOnThreads(rt, reads, 2), reads, ds.contents, files);
+    assert.equal(srv.server.requests(), before);
+    assert.equal(rt.core.snapshot().readsWaited, 0);
+    rt.core.close();
+  } finally {
+    await srv.close();
+    await ds.cleanup();
+  }
+});
+
 test('bad requests fail cleanly instead of hanging', async () => {
   const ds = await makeDataset(SIZES);
   const srv = await startServer(ds.dist);

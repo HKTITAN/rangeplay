@@ -15,10 +15,10 @@
 // Messages from the page:   { type: 'init', canvas, handlers, width, height, dpr, prefer2d, pacing, enginePort }
 //                           { type: 'resize', width, height, dpr }
 // Messages from the engine: { type: 'attach', memory, ringOffset }
-// To the page:              { type: 'ready', backend }, { type: 'error', message }, { type: 'log', text }
+// To the page:              { type: 'ready', backend }, { type: 'first-frame' }, { type: 'error', message }, { type: 'log', text }
 
 import { CommandRing } from './shared/ring.js';
-import { OP_FRAME_END, RING_WRITE_W } from './shared/layout.js';
+import { OP_FRAME_END, RING_READ_W, RING_WRITE_W } from './shared/layout.js';
 
 const log = (text) => self.postMessage({ type: 'log', text });
 const fail = (message) => self.postMessage({ type: 'error', message });
@@ -27,6 +27,7 @@ let ctx = null;
 let handlers = null;
 let ring = null;
 let size = { width: 1, height: 1, dpr: 1 };
+let framesDrawn = 0;
 let ready = null;
 
 let pacing = 'raf';
@@ -108,6 +109,7 @@ async function run() {
         log('[gpu] frame failed: ' + e.message);
       }
       ring.markDone();
+      if (++framesDrawn === 1) self.postMessage({ type: 'first-frame' });
       continue;
     }
     const seen = ring.writeIndex();
@@ -136,6 +138,14 @@ self.onmessage = (ev) => {
       ready = init(m).catch((e) => {
         fail('GPU init failed: ' + e.message);
         throw e;
+      });
+      break;
+    case 'debug':
+      self.postMessage({
+        type: 'debug',
+        state: ring
+          ? { attached: true, write: ring.writeIndex() >>> 0, read: Atomics.load(ring.h, RING_READ_W) >>> 0, framesSubmitted: ring.framesSubmitted(), framesDone: ring.framesDone(), framesDrawn, backend: ctx?.backend }
+          : { attached: false, backend: ctx?.backend ?? null },
       });
       break;
     case 'resize':

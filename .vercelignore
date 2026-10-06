@@ -3,3 +3,4 @@ examples/*/dist
 examples/*/.assets
 site
 recordings
+examples/*/.build

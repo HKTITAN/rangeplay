@@ -239,3 +239,24 @@ export async function connect({ heapBytes = 64 * 1048576, ioSlots = 16, hintCap 
     post: (message) => self.postMessage({ type: 'rangeplay:app', message }),
   };
 }
+
+// ---- engines compiled to wasm (native/rangeplay.h) -----------------------------------------------------------------
+
+// The host's start message: { manifest, manifestUrl, ioPort, gpuPort, options }.
+export function waitForStart() {
+  if (!startMessage) throw new Error('waitForStart() runs in the engine worker that host.js starts');
+  return startMessage;
+}
+
+// Hands the engine's shared memory (a shared WebAssembly.Memory, or its SharedArrayBuffer when it cannot grow) and
+// the addresses of the structures the engine set up with rp_io_init / rp_ring_init / rp_records_init to the runtime.
+export function attachWasm(start, { memory, ioOffset, gpuOffset = null, inputOffset = null }) {
+  start.ioPort.postMessage({ type: 'attach', memory, controlOffset: ioOffset });
+  if (gpuOffset !== null) start.gpuPort.postMessage({ type: 'attach', memory, ringOffset: gpuOffset });
+  if (inputOffset !== null) self.postMessage({ type: 'rangeplay:input', memory, ringOffset: inputOffset });
+}
+
+// Tells the page something from an engine worker (the host's onMessage callback receives it).
+export function postToPage(message) {
+  self.postMessage({ type: 'rangeplay:app', message });
+}

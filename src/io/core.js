@@ -24,6 +24,7 @@ export const DEFAULT_OPTIONS = {
   maxQueuedHints: 2048,           // older queued hints are dropped beyond this
   bootGapBytes: 64 * 1024,        // boot set ranges closer than this are fetched as one
   memoryCacheBytes: 256 * 1048576, // size of the in-memory cache when there is no persistent one
+  fillConcurrency: 4,             // background fill (fill()) fetches in flight, low fetch priority
 };
 
 const now = () => (globalThis.performance ? performance.now() : Date.now());
@@ -49,6 +50,7 @@ export class IoCore {
       fetches: 0, fetchesActive: 0, bytesFetched: 0,
       hints: 0, hintsFetched: 0, hintsDropped: 0,
       boot: { runs: 0, done: 0, bytes: 0, ms: 0, state: 'none' },
+      fill: { runs: 0, done: 0, bytes: 0, state: 'none' },
     };
     if (fetcher) fetcher.onBytes = (n) => { this.stats.bytesFetched += n; };
   }
@@ -373,6 +375,37 @@ export class IoCore {
     this.log('[io] boot set: ' + runs.length + ' ranges, ' + (bytes / 1048576).toFixed(1) + ' MB in ' + (boot.ms / 1000).toFixed(1) + ' s');
   }
 
+  // "Install in the background": fetches every block of the given files (paths, or true for all) at low priority,
+  // fillConcurrency at a time, so the whole game ends up on the device while it is played. Blocks already stored or
+  // being fetched cost nothing; reads the engine is blocked on still go first.
+  async fill(paths) {
+    const ids = paths === true
+      ? [...Array(this.files.count).keys()]
+      : paths.map((p) => this.files.id(p)).filter((id) => id >= 0);
+    const maxRun = Math.max(1, Math.floor(this.opts.maxRunBytes / this.bs));
+    const runs = [];
+    let bytes = 0;
+    for (const id of ids) {
+      bytes += this.files.size(id);
+      for (let k = 0, n = this.files.blocks(id); k < n; k += maxRun) runs.push([id, k, Math.min(n - 1, k + maxRun - 1)]);
+    }
+    const fill = (this.stats.fill = { runs: runs.length, done: 0, bytes, state: 'running' });
+    let next = 0;
+    const worker = async () => {
+      while (next < runs.length && !this.closed) {
+        const [id, a, b] = runs[next++];
+        try {
+          await this.ensure(id, a, b, 'boot');
+        } catch (e) {
+          this.log('[io] background fill: ' + e.message);
+        }
+        fill.done++;
+      }
+    };
+    await Promise.all(Array.from({ length: this.opts.fillConcurrency }, worker));
+    fill.state = this.closed ? 'stopped' : 'done';
+  }
+
   startRecording() {
     this.recording = new Map();
   }
@@ -390,10 +423,30 @@ export class IoCore {
     return { format: BOOTSET_FORMAT, manifestVersion: this.files.version, files };
   }
 
+  // The IO control block as the engine threads left it: what each slot is doing, where the hint ring stands.
+  debugState() {
+    if (!this.cw) return { attached: false };
+    const a = this.i32, cw = this.cw, names = ['idle', 'requested', 'taken', 'done'];
+    const slots = [];
+    for (let s = 0, n = Math.min(Atomics.load(a, cw + IO_SLOT_NEXT_W), this.slotCap); s < n; s++) {
+      const w = cw + ioSlotWord(s), st = Atomics.load(a, w + SLOT_STATE);
+      slots.push({ slot: s, state: names[st] ?? st, file: this.files.valid(a[w + SLOT_FILE]) ? this.files.path(a[w + SLOT_FILE]) : a[w + SLOT_FILE], offset: (a[w + SLOT_OFF_LO] >>> 0) + (a[w + SLOT_OFF_HI] >>> 0) * 4294967296, length: a[w + SLOT_LEN] });
+    }
+    return {
+      attached: true,
+      doorbell: Atomics.load(a, cw + IO_DOORBELL_W),
+      hintHead: Atomics.load(a, cw + IO_HINT_HEAD_W) >>> 0,
+      hintTail: Atomics.load(a, cw + IO_HINT_TAIL_W) >>> 0,
+      inflightBlocks: this.inflight.size,
+      slots,
+    };
+  }
+
   snapshot() {
     return {
       ...this.stats,
       boot: { ...this.stats.boot },
+      fill: { ...this.stats.fill },
       queued: this.hintLane.queued + this.lowLane.queued,
       store: this.store.stats(),
       retries: this.fetcher?.stats.retries ?? 0,

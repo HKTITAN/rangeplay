@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Freedoom · rangeplay demo</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; --bg: #000; --panel: rgba(10, 10, 12, 0.82); --line: rgba(255, 255, 255, 0.12); --text: #ece8e1; --dim: #9a958c; --ok: #7fd49b; --warn: #f0c060; --accent: #e8473a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 8px 14px; background: linear-gradient(var(--panel), rgba(10, 10, 12, 0.5)); border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  #bar b { font-weight: 650; }
+  #bar .dim { color: var(--dim); }
+  #bar a { color: var(--text); }
+  #bar .spacer { flex: 1; }
+  #console { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(640px, calc(100vw - 32px)); max-height: 60vh; overflow: hidden; padding: 14px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; color: var(--dim); }
+  #console h1 { font: 650 14px/1.3 ui-sans-serif, system-ui, sans-serif; color: var(--text); margin: 0 0 8px; }
+  #help { position: fixed; bottom: 0; left: 0; right: 0; padding: 7px 14px; color: var(--dim); font-size: 12px; background: linear-gradient(rgba(10, 10, 12, 0.3), var(--panel)); }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; color: var(--text); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); }
+  button { font: inherit; color: var(--text); background: rgba(255, 255, 255, 0.08); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+  button:hover { background: rgba(255, 255, 255, 0.15); }
+</style>
+</head>
+<body>
+<canvas id="view" tabindex="0" aria-label="Freedoom, running in this tab"></canvas>
+<div id="bar">
+  <b>Freedoom</b>
+  <span class="dim" id="game">…</span>
+  <span>First frame <b id="first">…</b></span>
+  <span>Streamed <b id="net">…</b></span>
+  <span>Reads <b id="reads">…</b></span>
+  <span>Cache <b id="store">…</b></span>
+  <span class="spacer"></span>
+  <a href="?wad=1" id="p1">Phase 1</a>
+  <a href="?wad=2" id="p2">Phase 2</a>
+  <button id="clear">Clear cache</button>
+</div>
+<pre id="console"><h1>Starting the engine</h1></pre>
+<div id="help">
+  <kbd>↑</kbd><kbd>↓</kbd> or <kbd>W</kbd><kbd>S</kbd> move · <kbd>←</kbd><kbd>→</kbd> turn · <kbd>A</kbd><kbd>D</kbd> strafe · <kbd>Ctrl</kbd> or click fire ·
+  <kbd>Space</kbd> or <kbd>E</kbd> use · <kbd>Shift</kbd> run · <kbd>1</kbd>–<kbd>7</kbd> weapons · <kbd>Esc</kbd> menu.
+  Game data: <a href="./dist/COPYING.txt">Freedoom</a> (BSD-3-Clause). Engine: Doom via
+  <a href="https://github.com/ozkl/doomgeneric">doomgeneric</a> (GPL-2.0), built with
+  <a href="https://github.com/HKTITAN/rangeplay/tree/main/examples/freedoom">this platform layer</a>.
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -39,12 +39,14 @@ async function init(m) {
   if (m.record) core.startRecording();
   self.postMessage({ type: 'ready', store: store.stats() });
   statsTimer = setInterval(postStats, 250);
-  if (m.bootsetUrl && !m.record) {
-    fetch(m.bootsetUrl, { cache: 'no-cache' })
+  // The boot set first, then (if asked) the rest of the game in the background.
+  const boot = m.bootsetUrl && !m.record
+    ? fetch(m.bootsetUrl, { cache: 'no-cache' })
       .then((r) => (r.ok ? r.json() : null))
       .then((set) => set && core.prefetchBootset(set))
-      .catch((e) => log('[io] no boot set (' + e.message + ')'));
-  }
+      .catch((e) => log('[io] no boot set (' + e.message + ')'))
+    : Promise.resolve();
+  if (options.backgroundFill) boot.then(() => core.fill(options.backgroundFill)).catch((e) => log('[io] background fill: ' + e.message));
 }
 
 function postStats() {
@@ -73,6 +75,9 @@ self.onmessage = async (ev) => {
         self.postMessage({ type: 'error', message: 'IO init failed: ' + e.message });
         throw e;
       });
+      break;
+    case 'debug':
+      self.postMessage({ type: 'debug', state: core ? core.debugState() : { initialized: false } });
       break;
     case 'take-recording':
       await ready;
