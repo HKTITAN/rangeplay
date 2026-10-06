@@ -1,0 +1,1344 @@
+diff --git a/source/bspfile.h b/source/bspfile.h
+index 3089026..64f6add 100644
+--- a/source/bspfile.h
++++ b/source/bspfile.h
+@@ -31,7 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ #define	MAX_MAP_PLANES		32767
+ #define	MAX_MAP_NODES		32767		// because negative shorts are contents
+ #define	MAX_MAP_CLIPNODES	32767		//
+-#define	MAX_MAP_LEAFS		8192
++#define	MAX_MAP_LEAFS		65536
+ #define	MAX_MAP_VERTS		65535
+ #define	MAX_MAP_FACES		65535
+ #define	MAX_MAP_MARKSURFACES 65535
+@@ -168,6 +168,12 @@ typedef struct
+ 	short		children[2];	// negative numbers are contents
+ } dclipnode_t;
+ 
++typedef struct
++{
++	int			planenum;
++	int			children[2];	// in memory: clip nodes beyond 32767
++} mclipnode_t;
++
+ 
+ typedef struct texinfo_s
+ {
+@@ -224,6 +230,52 @@ typedef struct
+ 	byte		ambient_level[NUM_AMBIENTS];
+ } dleaf_t;
+ 
++// BSP2, the format of maps too big for the original: the same lumps, with 32-bit indices and float bounds
++#define	BSP2VERSION	(('2' << 24) | ('P' << 16) | ('S' << 8) | 'B')
++
++typedef struct
++{
++	int			planenum;
++	int			children[2];
++	float		mins[3];
++	float		maxs[3];
++	unsigned int	firstface;
++	unsigned int	numfaces;
++} dnode2_t;
++
++typedef struct
++{
++	int			planenum;
++	int			children[2];
++} dclipnode2_t;
++
++typedef struct
++{
++	unsigned int	v[2];
++} dedge2_t;
++
++typedef struct
++{
++	int			planenum;
++	int			side;
++	int			firstedge;
++	int			numedges;
++	int			texinfo;
++	byte		styles[MAXLIGHTMAPS];
++	int			lightofs;
++} dface2_t;
++
++typedef struct
++{
++	int			contents;
++	int			visofs;
++	float		mins[3];
++	float		maxs[3];
++	unsigned int	firstmarksurface;
++	unsigned int	nummarksurfaces;
++	byte		ambient_level[NUM_AMBIENTS];
++} dleaf2_t;
++
+ 
+ //============================================================================
+ 
+diff --git a/source/cl_parse.c b/source/cl_parse.c
+index 7107cd6..e92e24f 100644
+--- a/source/cl_parse.c
++++ b/source/cl_parse.c
+@@ -120,14 +120,26 @@ void CL_ParseStartSoundPacket(void)
+ 	else
+ 		attenuation = DEFAULT_SOUND_PACKET_ATTENUATION;
+ 	
+-	channel = MSG_ReadShort ();
+-	sound_num = MSG_ReadByte ();
+-
+-	ent = channel >> 3;
+-	channel &= 7;
++	if (field_mask & SND_LARGEENTITY)
++	{
++		ent = (unsigned short) MSG_ReadShort ();
++		channel = MSG_ReadByte ();
++	}
++	else
++	{
++		channel = (unsigned short) MSG_ReadShort ();
++		ent = channel >> 3;
++		channel &= 7;
++	}
++	if (field_mask & SND_LARGESOUND)
++		sound_num = (unsigned short) MSG_ReadShort ();
++	else
++		sound_num = MSG_ReadByte ();
+ 
+ 	if (ent > MAX_EDICTS)
+ 		Host_Error ("CL_ParseStartSoundPacket: ent = %i", ent);
++	if (sound_num >= MAX_SOUNDS)
++		Host_Error ("CL_ParseStartSoundPacket: sound = %i", sound_num);
+ 	
+ 	for (i=0 ; i<3 ; i++)
+ 		pos[i] = MSG_ReadCoord ();
+@@ -206,9 +218,9 @@ void CL_ParseServerInfo (void)
+ 	char	*str;
+ 	int		i;
+ 	int		nummodels, numsounds;
+-	char	model_precache[MAX_MODELS][MAX_QPATH];
+-	char	sound_precache[MAX_SOUNDS][MAX_QPATH];
+-	
++	static char	model_precache[MAX_MODELS][MAX_QPATH];
++	static char	sound_precache[MAX_SOUNDS][MAX_QPATH];
++
+ 	Con_DPrintf ("Serverinfo packet received.\n");
+ //
+ // wipe the client_state_t struct
+@@ -217,11 +229,9 @@ void CL_ParseServerInfo (void)
+ 
+ // parse protocol version number
+ 	i = MSG_ReadLong ();
+-	if (i != PROTOCOL_VERSION)
+-	{
+-		Con_Printf ("Server returned version %i, not %i", i, PROTOCOL_VERSION);
+-		return;
+-	}
++	if (i != PROTOCOL_VERSION && i != PROTOCOL_FITZQUAKE && i != PROTOCOL_RMQ)
++		Host_Error ("Server returned version %i, not %i, %i or %i", i, PROTOCOL_VERSION, PROTOCOL_FITZQUAKE, PROTOCOL_RMQ);
++	msg_protocolflags = i == PROTOCOL_RMQ ? MSG_ReadLong () : 0;
+ 
+ // parse maxclients
+ 	cl.maxclients = MSG_ReadByte ();
+@@ -257,10 +267,7 @@ void CL_ParseServerInfo (void)
+ 		if (!str[0])
+ 			break;
+ 		if (nummodels==MAX_MODELS)
+-		{
+-			Con_Printf ("Server sent too many model precaches\n");
+-			return;
+-		}
++			Host_Error ("Server sent too many model precaches");
+ 		strcpy (model_precache[nummodels], str);
+ 		Mod_TouchModel (str);
+ 	}
+@@ -273,10 +280,7 @@ void CL_ParseServerInfo (void)
+ 		if (!str[0])
+ 			break;
+ 		if (numsounds==MAX_SOUNDS)
+-		{
+-			Con_Printf ("Server sent too many sound precaches\n");
+-			return;
+-		}
++			Host_Error ("Server sent too many sound precaches");
+ 		strcpy (sound_precache[numsounds], str);
+ 		S_TouchSound (str);
+ 	}
+@@ -348,8 +352,12 @@ void CL_ParseUpdate (int bits)
+ 		i = MSG_ReadByte ();
+ 		bits |= (i<<8);
+ 	}
++	if (bits & U_EXTEND1)
++		bits |= MSG_ReadByte () << 16;
++	if (bits & U_EXTEND2)
++		bits |= MSG_ReadByte () << 24;
+ 
+-	if (bits & U_LONGENTITY)	
++	if (bits & U_LONGENTITY)
+ 		num = MSG_ReadShort ();
+ 	else
+ 		num = MSG_ReadByte ();
+@@ -368,31 +376,10 @@ if (bits&(1<<i))
+ 	ent->msgtime = cl.mtime[0];
+ 	
+ 	if (bits & U_MODEL)
+-	{
+ 		modnum = MSG_ReadByte ();
+-		if (modnum >= MAX_MODELS)
+-			Host_Error ("CL_ParseModel: bad modnum");
+-	}
+ 	else
+ 		modnum = ent->baseline.modelindex;
+-		
+-	model = cl.model_precache[modnum];
+-	if (model != ent->model)
+-	{
+-		ent->model = model;
+-	// automatic animation (torches, etc) can be either all together
+-	// or randomized
+-		if (model)
+-		{
+-			if (model->synctype == ST_RAND)
+-				ent->syncbase = (float)(rand()&0x7fff) / 0x7fff;
+-			else
+-				ent->syncbase = 0.0;
+-		}
+-		else
+-			forcelink = true;	// hack to make null model players work
+-	}
+-	
++
+ 	if (bits & U_FRAME)
+ 		ent->frame = MSG_ReadByte ();
+ 	else
+@@ -452,6 +439,37 @@ if (bits&(1<<i))
+ 	else
+ 		ent->msg_angles[0][2] = ent->baseline.angles[2];
+ 
++	// PROTOCOL_FITZQUAKE: the high bytes of the frame and the model, and what this renderer does not draw
++	if (bits & U_ALPHA)
++		MSG_ReadByte ();
++	if (bits & U_SCALE)
++		MSG_ReadByte ();
++	if (bits & U_FRAME2)
++		ent->frame = (ent->frame & 0xFF) | (MSG_ReadByte () << 8);
++	if (bits & U_MODEL2)
++		modnum = (modnum & 0xFF) | (MSG_ReadByte () << 8);
++	if (bits & U_LERPFINISH)
++		MSG_ReadByte ();
++
++	if (modnum >= MAX_MODELS)
++		Host_Error ("CL_ParseModel: bad modnum");
++	model = cl.model_precache[modnum];
++	if (model != ent->model)
++	{
++		ent->model = model;
++	// automatic animation (torches, etc) can be either all together
++	// or randomized
++		if (model)
++		{
++			if (model->synctype == ST_RAND)
++				ent->syncbase = (float)(rand()&0x7fff) / 0x7fff;
++			else
++				ent->syncbase = 0.0;
++		}
++		else
++			forcelink = true;	// hack to make null model players work
++	}
++
+ 	if ( bits & U_NOLERP )
+ 		ent->forcelink = true;
+ 
+@@ -470,12 +488,13 @@ if (bits&(1<<i))
+ CL_ParseBaseline
+ ==================
+ */
+-void CL_ParseBaseline (entity_t *ent)
++void CL_ParseBaseline (entity_t *ent, int version)
+ {
+ 	int			i;
+-	
+-	ent->baseline.modelindex = MSG_ReadByte ();
+-	ent->baseline.frame = MSG_ReadByte ();
++	int			bits = version == 2 ? MSG_ReadByte () : 0;	// PROTOCOL_FITZQUAKE: svc_spawnbaseline2, svc_spawnstatic2
++
++	ent->baseline.modelindex = (bits & B_LARGEMODEL) ? (unsigned short) MSG_ReadShort () : MSG_ReadByte ();
++	ent->baseline.frame = (bits & B_LARGEFRAME) ? (unsigned short) MSG_ReadShort () : MSG_ReadByte ();
+ 	ent->baseline.colormap = MSG_ReadByte();
+ 	ent->baseline.skin = MSG_ReadByte();
+ 	for (i=0 ; i<3 ; i++)
+@@ -483,6 +502,10 @@ void CL_ParseBaseline (entity_t *ent)
+ 		ent->baseline.origin[i] = MSG_ReadCoord ();
+ 		ent->baseline.angles[i] = MSG_ReadAngle ();
+ 	}
++	if (bits & B_ALPHA)
++		MSG_ReadByte ();
++	if (ent->baseline.modelindex >= MAX_MODELS)
++		Host_Error ("CL_ParseBaseline: bad modnum");
+ }
+ 
+ 
+@@ -602,6 +625,28 @@ void CL_ParseClientdata (int bits)
+ 			Sbar_Changed ();
+ 		}
+ 	}
++
++	// PROTOCOL_FITZQUAKE: the high bytes of values over 255
++	if (bits & SU_WEAPON2)
++		cl.stats[STAT_WEAPON] |= MSG_ReadByte () << 8;
++	if (bits & SU_ARMOR2)
++		cl.stats[STAT_ARMOR] |= MSG_ReadByte () << 8;
++	if (bits & SU_AMMO2)
++		cl.stats[STAT_AMMO] |= MSG_ReadByte () << 8;
++	if (bits & SU_SHELLS2)
++		cl.stats[STAT_SHELLS] |= MSG_ReadByte () << 8;
++	if (bits & SU_NAILS2)
++		cl.stats[STAT_NAILS] |= MSG_ReadByte () << 8;
++	if (bits & SU_ROCKETS2)
++		cl.stats[STAT_ROCKETS] |= MSG_ReadByte () << 8;
++	if (bits & SU_CELLS2)
++		cl.stats[STAT_CELLS] |= MSG_ReadByte () << 8;
++	if (bits & SU_WEAPONFRAME2)
++		cl.stats[STAT_WEAPONFRAME] |= MSG_ReadByte () << 8;
++	if (bits & SU_WEAPONALPHA)
++		MSG_ReadByte ();
++	if (bits & (SU_WEAPON2 | SU_ARMOR2 | SU_AMMO2 | SU_SHELLS2 | SU_NAILS2 | SU_ROCKETS2 | SU_CELLS2))
++		Sbar_Changed ();
+ }
+ 
+ /*
+@@ -644,7 +689,7 @@ void CL_NewTranslation (int slot)
+ CL_ParseStatic
+ =====================
+ */
+-void CL_ParseStatic (void)
++void CL_ParseStatic (int version)
+ {
+ 	entity_t *ent;
+ 	int		i;
+@@ -654,7 +699,7 @@ void CL_ParseStatic (void)
+ 		Host_Error ("Too many static entities");
+ 	ent = &cl_static_entities[i];
+ 	cl.num_statics++;
+-	CL_ParseBaseline (ent);
++	CL_ParseBaseline (ent, version);
+ 
+ // copy it to the current state
+ 	ent->model = cl.model_precache[ent->baseline.modelindex];
+@@ -673,15 +718,17 @@ void CL_ParseStatic (void)
+ CL_ParseStaticSound
+ ===================
+ */
+-void CL_ParseStaticSound (void)
++void CL_ParseStaticSound (int version)
+ {
+ 	vec3_t		org;
+ 	int			sound_num, vol, atten;
+ 	int			i;
+-	
++
+ 	for (i=0 ; i<3 ; i++)
+ 		org[i] = MSG_ReadCoord ();
+-	sound_num = MSG_ReadByte ();
++	sound_num = version == 2 ? (unsigned short) MSG_ReadShort () : MSG_ReadByte ();
++	if (sound_num >= MAX_SOUNDS)
++		Host_Error ("CL_ParseStaticSound: sound = %i", sound_num);
+ 	vol = MSG_ReadByte ();
+ 	atten = MSG_ReadByte ();
+ 	
+@@ -755,7 +802,11 @@ void CL_ParseServerMessage (void)
+ 			break;
+ 			
+ 		case svc_clientdata:
+-			i = MSG_ReadShort ();
++			i = (unsigned short) MSG_ReadShort ();
++			if (i & SU_EXTEND1)
++				i |= MSG_ReadByte () << 16;
++			if (i & SU_EXTEND2)
++				i |= MSG_ReadByte () << 24;
+ 			CL_ParseClientdata (i);
+ 			break;
+ 		
+@@ -847,11 +898,34 @@ void CL_ParseServerMessage (void)
+ 		case svc_spawnbaseline:
+ 			i = MSG_ReadShort ();
+ 			// must use CL_EntityNum() to force cl.num_entities up
+-			CL_ParseBaseline (CL_EntityNum(i));
++			CL_ParseBaseline (CL_EntityNum(i), 1);
++			break;
++		case svc_spawnbaseline2:
++			i = MSG_ReadShort ();
++			CL_ParseBaseline (CL_EntityNum(i), 2);
+ 			break;
+ 		case svc_spawnstatic:
+-			CL_ParseStatic ();
+-			break;			
++			CL_ParseStatic (1);
++			break;
++		case svc_spawnstatic2:
++			CL_ParseStatic (2);
++			break;
++		case svc_spawnstaticsound2:
++			CL_ParseStaticSound (2);
++			break;
++		case svc_skybox:	// a sky this renderer does not draw
++			MSG_ReadString ();
++			break;
++		case svc_fog:		// fog this renderer does not draw: density, red, green, blue, time
++			MSG_ReadByte ();
++			MSG_ReadByte ();
++			MSG_ReadByte ();
++			MSG_ReadByte ();
++			MSG_ReadShort ();
++			break;
++		case svc_bf:
++			Cmd_ExecuteString ("bf", src_command);
++			break;
+ 		case svc_temp_entity:
+ 			CL_ParseTEnt ();
+ 			break;
+@@ -895,7 +969,7 @@ void CL_ParseServerMessage (void)
+ 			break;
+ 			
+ 		case svc_spawnstaticsound:
+-			CL_ParseStaticSound ();
++			CL_ParseStaticSound (1);
+ 			break;
+ 
+ 		case svc_cdtrack:
+diff --git a/source/client.h b/source/client.h
+index c6a0b00..5417f9b 100644
+--- a/source/client.h
++++ b/source/client.h
+@@ -86,7 +86,7 @@ typedef struct
+ 	vec3_t	start, end;
+ } beam_t;
+ 
+-#define	MAX_EFRAGS		640
++#define	MAX_EFRAGS		8192
+ 
+ #define	MAX_MAPSTRING	2048
+ #define	MAX_DEMOS		8
+@@ -257,7 +257,7 @@ extern	cvar_t	m_side;
+ 
+ 
+ #define	MAX_TEMP_ENTITIES	64			// lightning bolts, etc
+-#define	MAX_STATIC_ENTITIES	128			// torches, etc
++#define	MAX_STATIC_ENTITIES	1024			// torches, etc
+ 
+ extern	client_state_t	cl;
+ 
+@@ -290,7 +290,7 @@ void CL_Disconnect (void);
+ void CL_Disconnect_f (void);
+ void CL_NextDemo (void);
+ 
+-#define			MAX_VISEDICTS	256
++#define			MAX_VISEDICTS	2048
+ extern	int				cl_numvisedicts;
+ extern	entity_t		*cl_visedicts[MAX_VISEDICTS];
+ 
+diff --git a/source/common.c b/source/common.c
+index ad69937..a566b24 100644
+--- a/source/common.c
++++ b/source/common.c
+@@ -714,13 +714,29 @@ char *MSG_ReadString (void)
+ 	return string;
+ }
+ 
++// PROTOCOL_RMQ demos can use wider coordinates and angles: set by the client from svc_serverinfo
++int msg_protocolflags;
++
+ float MSG_ReadCoord (void)
+ {
++	if (msg_protocolflags & PRFL_FLOATCOORD)
++		return MSG_ReadFloat ();
++	if (msg_protocolflags & PRFL_INT32COORD)
++		return MSG_ReadLong () * (1.0/16);
++	if (msg_protocolflags & PRFL_24BITCOORD)
++	{
++		int whole = MSG_ReadShort ();
++		return whole + MSG_ReadByte () * (1.0/255);
++	}
+ 	return MSG_ReadShort() * (1.0/8);
+ }
+ 
+ float MSG_ReadAngle (void)
+ {
++	if (msg_protocolflags & PRFL_FLOATANGLE)
++		return MSG_ReadFloat ();
++	if (msg_protocolflags & PRFL_SHORTANGLE)
++		return MSG_ReadShort () * (360.0/65536);
+ 	return MSG_ReadChar() * (360.0/256);
+ }
+ 
+diff --git a/source/common.h b/source/common.h
+index 3a31d95..b46ba6a 100644
+--- a/source/common.h
++++ b/source/common.h
+@@ -116,6 +116,7 @@ int MSG_ReadLong (void);
+ float MSG_ReadFloat (void);
+ char *MSG_ReadString (void);
+ 
++extern int msg_protocolflags;
+ float MSG_ReadCoord (void);
+ float MSG_ReadAngle (void);
+ 
+diff --git a/source/model.c b/source/model.c
+index 1301f86..433e4e2 100644
+--- a/source/model.c
++++ b/source/model.c
+@@ -35,7 +35,7 @@ model_t *Mod_LoadModel (model_t *mod, qboolean crash);
+ 
+ byte	mod_novis[MAX_MAP_LEAFS/8];
+ 
+-#define	MAX_MOD_KNOWN	256
++#define	MAX_MOD_KNOWN	2048
+ model_t	mod_known[MAX_MOD_KNOWN];
+ int		mod_numknown;
+ 
+@@ -345,6 +345,15 @@ model_t *Mod_ForName (char *name, qboolean crash)
+ */
+ 
+ byte	*mod_base;
++static qboolean	mod_bsp2;	// the brush model being loaded is BSP2: same lumps, wider records
++
++// BSP2 indices go into this engine's 16-bit in-memory fields: a map that needs more is refused, not misread
++static int Mod_Short2 (unsigned int v, char *what)
++{
++	if (v > 65535)
++		Host_Error ("%s: %u %s, more than this engine supports", loadmodel->name, v, what);
++	return v;
++}
+ 
+ 
+ /*
+@@ -622,6 +631,23 @@ void Mod_LoadEdges (lump_t *l)
+ 	medge_t *out;
+ 	int 	i, count;
+ 
++	if (mod_bsp2)
++	{
++		dedge2_t *in2 = (void *)(mod_base + l->fileofs);
++		if (l->filelen % sizeof(*in2))
++			Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
++		count = l->filelen / sizeof(*in2);
++		out = Hunk_AllocName ( (count + 1) * sizeof(*out), loadname);
++		loadmodel->edges = out;
++		loadmodel->numedges = count;
++		for ( i=0 ; i<count ; i++, in2++, out++)
++		{
++			out->v[0] = Mod_Short2 (LittleLong(in2->v[0]), "vertices");
++			out->v[1] = Mod_Short2 (LittleLong(in2->v[1]), "vertices");
++		}
++		return;
++	}
++
+ 	in = (void *)(mod_base + l->fileofs);
+ 	if (l->filelen % sizeof(*in))
+ 		Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
+@@ -766,41 +792,56 @@ Mod_LoadFaces
+ void Mod_LoadFaces (lump_t *l)
+ {
+ 	dface_t		*in;
++	dface2_t	*in2;
+ 	msurface_t 	*out;
+ 	int			i, count, surfnum;
+ 	int			planenum, side;
++	int			size = mod_bsp2 ? sizeof(dface2_t) : sizeof(dface_t);
++	byte		*styles;
+ 
+ 	in = (void *)(mod_base + l->fileofs);
+-	if (l->filelen % sizeof(*in))
++	in2 = (void *)in;
++	if (l->filelen % size)
+ 		Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
+-	count = l->filelen / sizeof(*in);
+-	out = Hunk_AllocName ( count*sizeof(*out), loadname);	
++	count = l->filelen / size;
++	out = Hunk_AllocName ( count*sizeof(*out), loadname);
+ 
+ 	loadmodel->surfaces = out;
+ 	loadmodel->numsurfaces = count;
+ 
+-	for ( surfnum=0 ; surfnum<count ; surfnum++, in++, out++)
++	for ( surfnum=0 ; surfnum<count ; surfnum++, in++, in2++, out++)
+ 	{
+-		out->firstedge = LittleLong(in->firstedge);
+-		out->numedges = LittleShort(in->numedges);		
++		if (mod_bsp2)
++		{
++			out->firstedge = LittleLong(in2->firstedge);
++			out->numedges = LittleLong(in2->numedges);
++			planenum = LittleLong(in2->planenum);
++			side = LittleLong(in2->side);
++			out->texinfo = loadmodel->texinfo + LittleLong (in2->texinfo);
++			styles = in2->styles;
++		}
++		else
++		{
++			out->firstedge = LittleLong(in->firstedge);
++			out->numedges = LittleShort(in->numedges);
++			planenum = (unsigned short)LittleShort(in->planenum);
++			side = LittleShort(in->side);
++			out->texinfo = loadmodel->texinfo + (unsigned short)LittleShort (in->texinfo);
++			styles = in->styles;
++		}
+ 		out->flags = 0;
+-
+-		planenum = LittleShort(in->planenum);
+-		side = LittleShort(in->side);
+ 		if (side)
+-			out->flags |= SURF_PLANEBACK;			
++			out->flags |= SURF_PLANEBACK;
+ 
+ 		out->plane = loadmodel->planes + planenum;
+ 
+-		out->texinfo = loadmodel->texinfo + LittleShort (in->texinfo);
+-
+ 		CalcSurfaceExtents (out);
+-				
++
+ 	// lighting info
+ 
+ 		for (i=0 ; i<MAXLIGHTMAPS ; i++)
+-			out->styles[i] = in->styles[i];
+-		i = LittleLong(in->lightofs);
++			out->styles[i] = styles[i];
++		i = mod_bsp2 ? LittleLong(in2->lightofs) : LittleLong(in->lightofs);
+ 		if (i == -1)
+ 			out->samples = NULL;
+ 		else
+@@ -853,11 +894,45 @@ void Mod_LoadNodes (lump_t *l)
+ 	dnode_t		*in;
+ 	mnode_t 	*out;
+ 
++	if (mod_bsp2)
++	{
++		dnode2_t *in2 = (void *)(mod_base + l->fileofs);
++		if (l->filelen % sizeof(*in2))
++			Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
++		count = l->filelen / sizeof(*in2);
++		out = Hunk_AllocName ( count*sizeof(*out), loadname);
++		loadmodel->nodes = out;
++		loadmodel->numnodes = count;
++		for ( i=0 ; i<count ; i++, in2++, out++)
++		{
++			for (j=0 ; j<3 ; j++)
++			{
++				out->minmaxs[j] = floor (LittleFloat (in2->mins[j]));
++				out->minmaxs[3+j] = ceil (LittleFloat (in2->maxs[j]));
++			}
++			out->plane = loadmodel->planes + LittleLong(in2->planenum);
++			out->firstsurface = Mod_Short2 (LittleLong (in2->firstface), "faces");
++			out->numsurfaces = Mod_Short2 (LittleLong (in2->numfaces), "faces");
++			for (j=0 ; j<2 ; j++)
++			{
++				p = LittleLong (in2->children[j]);
++				if (p >= 0 && p < count)
++					out->children[j] = loadmodel->nodes + p;
++				else if (p < 0 && -1 - p < loadmodel->numleafs)
++					out->children[j] = (mnode_t *)(loadmodel->leafs + (-1 - p));
++				else
++					Host_Error ("%s: bad node child %i", loadmodel->name, p);
++			}
++		}
++		Mod_SetParent (loadmodel->nodes, NULL);
++		return;
++	}
++
+ 	in = (void *)(mod_base + l->fileofs);
+ 	if (l->filelen % sizeof(*in))
+ 		Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
+ 	count = l->filelen / sizeof(*in);
+-	out = Hunk_AllocName ( count*sizeof(*out), loadname);	
++	out = Hunk_AllocName ( count*sizeof(*out), loadname);
+ 
+ 	loadmodel->nodes = out;
+ 	loadmodel->numnodes = count;
+@@ -873,16 +948,16 @@ void Mod_LoadNodes (lump_t *l)
+ 		p = LittleLong(in->planenum);
+ 		out->plane = loadmodel->planes + p;
+ 
+-		out->firstsurface = LittleShort (in->firstface);
+-		out->numsurfaces = LittleShort (in->numfaces);
++		out->firstsurface = (unsigned short)LittleShort (in->firstface);
++		out->numsurfaces = (unsigned short)LittleShort (in->numfaces);
+ 		
+ 		for (j=0 ; j<2 ; j++)
+ 		{
+-			p = LittleShort (in->children[j]);
+-			if (p >= 0)
++			p = (unsigned short)LittleShort (in->children[j]);
++			if (p < count)
+ 				out->children[j] = loadmodel->nodes + p;
+ 			else
+-				out->children[j] = (mnode_t *)(loadmodel->leafs + (-1 - p));
++				out->children[j] = (mnode_t *)(loadmodel->leafs + (65535 - p));
+ 		}
+ 	}
+ 	
+@@ -900,6 +975,37 @@ void Mod_LoadLeafs (lump_t *l)
+ 	mleaf_t 	*out;
+ 	int			i, j, count, p;
+ 
++	if (mod_bsp2)
++	{
++		dleaf2_t *in2 = (void *)(mod_base + l->fileofs);
++		if (l->filelen % sizeof(*in2))
++			Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
++		count = l->filelen / sizeof(*in2);
++		out = Hunk_AllocName ( count*sizeof(*out), loadname);
++		loadmodel->leafs = out;
++		loadmodel->numleafs = count;
++		for ( i=0 ; i<count ; i++, in2++, out++)
++		{
++			for (j=0 ; j<3 ; j++)
++			{
++				out->minmaxs[j] = floor (LittleFloat (in2->mins[j]));
++				out->minmaxs[3+j] = ceil (LittleFloat (in2->maxs[j]));
++			}
++			out->contents = LittleLong(in2->contents);
++			p = LittleLong(in2->firstmarksurface);
++			if (p < 0 || p + LittleLong(in2->nummarksurfaces) > loadmodel->nummarksurfaces)
++				Host_Error ("%s: bad leaf mark surfaces", loadmodel->name);
++			out->firstmarksurface = loadmodel->marksurfaces + p;
++			out->nummarksurfaces = LittleLong(in2->nummarksurfaces);
++			p = LittleLong(in2->visofs);
++			out->compressed_vis = p == -1 ? NULL : loadmodel->visdata + p;
++			out->efrags = NULL;
++			for (j=0 ; j<4 ; j++)
++				out->ambient_sound_level[j] = in2->ambient_level[j];
++		}
++		return;
++	}
++
+ 	in = (void *)(mod_base + l->fileofs);
+ 	if (l->filelen % sizeof(*in))
+ 		Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
+@@ -921,8 +1027,8 @@ void Mod_LoadLeafs (lump_t *l)
+ 		out->contents = p;
+ 
+ 		out->firstmarksurface = loadmodel->marksurfaces +
+-			LittleShort(in->firstmarksurface);
+-		out->nummarksurfaces = LittleShort(in->nummarksurfaces);
++			(unsigned short)LittleShort(in->firstmarksurface);
++		out->nummarksurfaces = (unsigned short)LittleShort(in->nummarksurfaces);
+ 		
+ 		p = LittleLong(in->visofs);
+ 		if (p == -1)
+@@ -943,15 +1049,17 @@ Mod_LoadClipnodes
+ */
+ void Mod_LoadClipnodes (lump_t *l)
+ {
+-	dclipnode_t *in, *out;
++	dclipnode_t *in;
++	mclipnode_t *out;
+ 	int			i, count;
+ 	hull_t		*hull;
++	int			size = mod_bsp2 ? sizeof(dclipnode2_t) : sizeof(dclipnode_t);
+ 
+ 	in = (void *)(mod_base + l->fileofs);
+-	if (l->filelen % sizeof(*in))
++	if (l->filelen % size)
+ 		Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
+-	count = l->filelen / sizeof(*in);
+-	out = Hunk_AllocName ( count*sizeof(*out), loadname);	
++	count = l->filelen / size;
++	out = Hunk_AllocName ( count*sizeof(*out), loadname);
+ 
+ 	loadmodel->clipnodes = out;
+ 	loadmodel->numclipnodes = count;
+@@ -982,9 +1090,21 @@ void Mod_LoadClipnodes (lump_t *l)
+ 
+ 	for (i=0 ; i<count ; i++, out++, in++)
+ 	{
++		if (mod_bsp2)
++		{
++			dclipnode2_t *in2 = (dclipnode2_t *)(mod_base + l->fileofs) + i;
++			out->planenum = LittleLong(in2->planenum);
++			out->children[0] = LittleLong(in2->children[0]);
++			out->children[1] = LittleLong(in2->children[1]);
++			continue;
++		}
+ 		out->planenum = LittleLong(in->planenum);
+-		out->children[0] = LittleShort(in->children[0]);
+-		out->children[1] = LittleShort(in->children[1]);
++		out->children[0] = (unsigned short)LittleShort(in->children[0]);
++		if (out->children[0] >= count)
++			out->children[0] -= 65536;
++		out->children[1] = (unsigned short)LittleShort(in->children[1]);
++		if (out->children[1] >= count)
++			out->children[1] -= 65536;
+ 	}
+ }
+ 
+@@ -998,7 +1118,7 @@ Deplicate the drawing hull structure as a clipping hull
+ void Mod_MakeHull0 (void)
+ {
+ 	mnode_t		*in, *child;
+-	dclipnode_t *out;
++	mclipnode_t *out;
+ 	int			i, j, count;
+ 	hull_t		*hull;
+ 	
+@@ -1037,7 +1157,26 @@ void Mod_LoadMarksurfaces (lump_t *l)
+ 	int		i, j, count;
+ 	short		*in;
+ 	msurface_t **out;
+-	
++
++	if (mod_bsp2)
++	{
++		unsigned int *in2 = (void *)(mod_base + l->fileofs);
++		if (l->filelen % sizeof(*in2))
++			Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
++		count = l->filelen / sizeof(*in2);
++		out = Hunk_AllocName ( count*sizeof(*out), loadname);
++		loadmodel->marksurfaces = out;
++		loadmodel->nummarksurfaces = count;
++		for ( i=0 ; i<count ; i++)
++		{
++			j = LittleLong(in2[i]);
++			if (j < 0 || j >= loadmodel->numsurfaces)
++				Host_Error ("Mod_ParseMarksurfaces: bad surface number");
++			out[i] = loadmodel->surfaces + j;
++		}
++		return;
++	}
++
+ 	in = (void *)(mod_base + l->fileofs);
+ 	if (l->filelen % sizeof(*in))
+ 		Sys_Error ("MOD_LoadBmodel: funny lump size in %s",loadmodel->name);
+@@ -1049,7 +1188,7 @@ void Mod_LoadMarksurfaces (lump_t *l)
+ 
+ 	for ( i=0 ; i<count ; i++)
+ 	{
+-		j = LittleShort(in[i]);
++		j = (unsigned short)LittleShort(in[i]);
+ 		if (j >= loadmodel->numsurfaces)
+ 			Sys_Error ("Mod_ParseMarksurfaces: bad surface number");
+ 		out[i] = loadmodel->surfaces + j;
+@@ -1151,8 +1290,9 @@ void Mod_LoadBrushModel (model_t *mod, void *buffer)
+ 	header = (dheader_t *)buffer;
+ 
+ 	i = LittleLong (header->version);
+-	if (i != BSPVERSION)
+-		Sys_Error ("Mod_LoadBrushModel: %s has wrong version number (%i should be %i)", mod->name, i, BSPVERSION);
++	if (i != BSPVERSION && i != BSP2VERSION)
++		Host_Error ("Mod_LoadBrushModel: %s has wrong version number (%i should be %i or BSP2)", mod->name, i, BSPVERSION);
++	mod_bsp2 = i == BSP2VERSION;
+ 
+ // swap all the lumps
+ 	mod_base = (byte *)header;
+diff --git a/source/model.h b/source/model.h
+index 2e89862..4ccebb2 100644
+--- a/source/model.h
++++ b/source/model.h
+@@ -168,7 +168,7 @@ typedef struct mleaf_s
+ // !!! if this is changed, it must be changed in asm_i386.h too !!!
+ typedef struct
+ {
+-	dclipnode_t	*clipnodes;
++	mclipnode_t	*clipnodes;
+ 	mplane_t	*planes;
+ 	int			firstclipnode;
+ 	int			lastclipnode;
+@@ -347,7 +347,7 @@ typedef struct model_s
+ 	int			*surfedges;
+ 
+ 	int			numclipnodes;
+-	dclipnode_t	*clipnodes;
++	mclipnode_t	*clipnodes;
+ 
+ 	int			nummarksurfaces;
+ 	msurface_t	**marksurfaces;
+diff --git a/source/net.h b/source/net.h
+index d59420b..3427889 100644
+--- a/source/net.h
++++ b/source/net.h
+@@ -28,7 +28,7 @@ struct qsockaddr
+ 
+ #define	NET_NAMELEN			64
+ 
+-#define NET_MAXMESSAGE		8192
++#define	NET_MAXMESSAGE		65536
+ #define NET_HEADERSIZE		(2 * sizeof(unsigned int))
+ #define NET_DATAGRAMSIZE	(MAX_DATAGRAM + NET_HEADERSIZE)
+ 
+diff --git a/source/pr_cmds.c b/source/pr_cmds.c
+index e3925ce..b6c0e79 100644
+--- a/source/pr_cmds.c
++++ b/source/pr_cmds.c
+@@ -89,8 +89,7 @@ void PF_objerror (void)
+ 	ed = PROG_TO_EDICT(pr_global_struct->self);
+ 	ED_Print (ed);
+ 	ED_Free (ed);
+-	
+-	Host_Error ("Program error");
++	// not fatal, as in later engines: the faulty entity is removed and the level goes on
+ }
+ 
+ 
+@@ -529,11 +528,14 @@ void PF_ambientsound (void)
+ 
+ // add an svc_spawnambient command to the level signon packet
+ 
+-	MSG_WriteByte (&sv.signon,svc_spawnstaticsound);
++	MSG_WriteByte (&sv.signon, soundnum > 255 ? svc_spawnstaticsound2 : svc_spawnstaticsound);
+ 	for (i=0 ; i<3 ; i++)
+ 		MSG_WriteCoord(&sv.signon, pos[i]);
+ 
+-	MSG_WriteByte (&sv.signon, soundnum);
++	if (soundnum > 255)
++		MSG_WriteShort (&sv.signon, soundnum);
++	else
++		MSG_WriteByte (&sv.signon, soundnum);
+ 
+ 	MSG_WriteByte (&sv.signon, vol*255);
+ 	MSG_WriteByte (&sv.signon, attenuation*64);
+@@ -1451,15 +1453,26 @@ int SV_ModelIndex (char *name);
+ void PF_makestatic (void)
+ {
+ 	edict_t	*ent;
+-	int		i;
++	int		i, model, bits;
+ 	
+ 	ent = G_EDICT(OFS_PARM0);
+ 
+-	MSG_WriteByte (&sv.signon,svc_spawnstatic);
++	// PROTOCOL_FITZQUAKE: svc_spawnstatic2 for models and frames over 255
++	model = SV_ModelIndex(pr_strings + ent->v.model);
++	bits = (model & 0xFF00 ? B_LARGEMODEL : 0) | ((int)ent->v.frame & 0xFF00 ? B_LARGEFRAME : 0);
++	MSG_WriteByte (&sv.signon, bits ? svc_spawnstatic2 : svc_spawnstatic);
++	if (bits)
++		MSG_WriteByte (&sv.signon, bits);
+ 
+-	MSG_WriteByte (&sv.signon, SV_ModelIndex(pr_strings + ent->v.model));
++	if (bits & B_LARGEMODEL)
++		MSG_WriteShort (&sv.signon, model);
++	else
++		MSG_WriteByte (&sv.signon, model);
+ 
+-	MSG_WriteByte (&sv.signon, ent->v.frame);
++	if (bits & B_LARGEFRAME)
++		MSG_WriteShort (&sv.signon, ent->v.frame);
++	else
++		MSG_WriteByte (&sv.signon, ent->v.frame);
+ 	MSG_WriteByte (&sv.signon, ent->v.colormap);
+ 	MSG_WriteByte (&sv.signon, ent->v.skin);
+ 	for (i=0 ; i<3 ; i++)
+diff --git a/source/protocol.h b/source/protocol.h
+index 04c1c43..3fe6b6a 100644
+--- a/source/protocol.h
++++ b/source/protocol.h
+@@ -20,6 +20,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ // protocol.h -- communications protocols
+ 
+ #define	PROTOCOL_VERSION	15
++// The protocols of later engines: FitzQuake's (more than 256 models and sounds; this engine's server speaks it) and
++// RMQ's (FitzQuake's, with wider coordinates and angles; this engine plays demos recorded with it).
++#define	PROTOCOL_FITZQUAKE	666
++#define	PROTOCOL_RMQ		999
++
++// PROTOCOL_RMQ flags, sent after the version
++#define	PRFL_SHORTANGLE		(1<<1)
++#define	PRFL_FLOATANGLE		(1<<2)
++#define	PRFL_24BITCOORD		(1<<3)
++#define	PRFL_FLOATCOORD		(1<<4)
++#define	PRFL_EDICTSCALE		(1<<5)
++#define	PRFL_INT32COORD		(1<<7)
+ 
+ // if the high bit of the servercmd is set, the low bits are fast update flags:
+ #define	U_MOREBITS	(1<<0)
+@@ -39,6 +51,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ #define	U_SKIN		(1<<12)
+ #define	U_EFFECTS	(1<<13)
+ #define	U_LONGENTITY	(1<<14)
++// PROTOCOL_FITZQUAKE
++#define	U_EXTEND1		(1<<15)
++#define	U_ALPHA			(1<<16)		// 1 byte
++#define	U_FRAME2		(1<<17)		// 1 byte: frame >> 8
++#define	U_MODEL2		(1<<18)		// 1 byte: modelindex >> 8
++#define	U_LERPFINISH	(1<<19)		// 1 byte
++#define	U_SCALE			(1<<20)		// 1 byte (PROTOCOL_RMQ)
++#define	U_EXTEND2		(1<<23)
+ 
+ 
+ #define	SU_VIEWHEIGHT	(1<<0)
+@@ -56,11 +76,30 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ #define	SU_WEAPONFRAME	(1<<12)
+ #define	SU_ARMOR		(1<<13)
+ #define	SU_WEAPON		(1<<14)
++// PROTOCOL_FITZQUAKE: the high bytes of values over 255, one byte each
++#define	SU_EXTEND1		(1<<15)
++#define	SU_WEAPON2		(1<<16)
++#define	SU_ARMOR2		(1<<17)
++#define	SU_AMMO2		(1<<18)
++#define	SU_SHELLS2		(1<<19)
++#define	SU_NAILS2		(1<<20)
++#define	SU_ROCKETS2		(1<<21)
++#define	SU_CELLS2		(1<<22)
++#define	SU_EXTEND2		(1<<23)
++#define	SU_WEAPONFRAME2	(1<<24)
++#define	SU_WEAPONALPHA	(1<<25)
+ 
+ // a sound with no channel is a local only sound
+ #define	SND_VOLUME		(1<<0)		// a byte
+ #define	SND_ATTENUATION	(1<<1)		// a byte
+ #define	SND_LOOPING		(1<<2)		// a long
++#define	SND_LARGEENTITY	(1<<3)		// PROTOCOL_FITZQUAKE: a short entity and a byte channel
++#define	SND_LARGESOUND	(1<<4)		// PROTOCOL_FITZQUAKE: a short sound index
++
++// PROTOCOL_FITZQUAKE baseline flags (svc_spawnbaseline2, svc_spawnstatic2)
++#define	B_LARGEMODEL	(1<<0)		// short model index
++#define	B_LARGEFRAME	(1<<1)		// short frame
++#define	B_ALPHA			(1<<2)		// 1 byte
+ 
+ 
+ // defaults for clientinfo messages
+@@ -130,6 +169,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ 
+ #define svc_cutscene		34
+ 
++// PROTOCOL_FITZQUAKE
++#define	svc_skybox				37	// [string] name
++#define	svc_bf					40
++#define	svc_fog					41	// [byte] density [byte] red [byte] green [byte] blue [short] time
++#define	svc_spawnbaseline2		42
++#define	svc_spawnstatic2		43
++#define	svc_spawnstaticsound2	44	// [coord3] [short] samp [byte] vol [byte] aten
++
+ //
+ // client to server
+ //
+diff --git a/source/quakedef.h b/source/quakedef.h
+index e01c39d..4fee06e 100644
+--- a/source/quakedef.h
++++ b/source/quakedef.h
+@@ -66,16 +66,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ 
+ #define	ON_EPSILON		0.1			// point on plane side epsilon
+ 
+-#define	MAX_MSGLEN		8000		// max length of a reliable message
+-#define	MAX_DATAGRAM	1024		// max length of unreliable message
++#define	MAX_MSGLEN		64000		// max length of a reliable message
++#define	MAX_DATAGRAM	32000		// max length of unreliable message
+ 
+ //
+ // per-level limits
+ //
+-#define	MAX_EDICTS		600			// FIXME: ouch! ouch! ouch!
++#define	MAX_EDICTS		8192
+ #define	MAX_LIGHTSTYLES	64
+-#define	MAX_MODELS		256			// these are sent over the net as bytes
+-#define	MAX_SOUNDS		256			// so they cannot be blindly increased
++#define	MAX_MODELS		2048			// over 255: PROTOCOL_FITZQUAKE
++#define	MAX_SOUNDS		2048
+ 
+ #define	SAVEGAME_COMMENT_LENGTH	39
+ 
+diff --git a/source/r_main.c b/source/r_main.c
+index 2729157..c100ead 100644
+--- a/source/r_main.c
++++ b/source/r_main.c
+@@ -598,8 +598,8 @@ void R_DrawViewModel (void)
+ 		return;
+ 
+ 	currententity = &cl.viewent;
+-	if (!currententity->model)
+-		return;
++	if (!currententity->model || currententity->model->type != mod_alias)
++		return;	// an old-protocol demo of a map with over 256 models can name a map piece as the weapon
+ 
+ 	VectorCopy (currententity->origin, r_entorigin);
+ 	VectorSubtract (r_origin, r_entorigin, modelorg);
+diff --git a/source/server.h b/source/server.h
+index 3d8266d..4dfa584 100644
+--- a/source/server.h
++++ b/source/server.h
+@@ -65,7 +65,7 @@ typedef struct
+ 	byte		reliable_datagram_buf[MAX_DATAGRAM];
+ 
+ 	sizebuf_t	signon;
+-	byte		signon_buf[8192];
++	byte		signon_buf[32000];
+ } server_t;
+ 
+ 
+diff --git a/source/sound.h b/source/sound.h
+index 1ba08d3..b9af2c0 100644
+--- a/source/sound.h
++++ b/source/sound.h
+@@ -127,7 +127,7 @@ void SNDDMA_Shutdown(void);
+ // User-setable variables
+ // ====================================================================
+ 
+-#define	MAX_CHANNELS			128
++#define	MAX_CHANNELS			512
+ #define	MAX_DYNAMIC_CHANNELS	8
+ 
+ 
+diff --git a/source/sv_main.c b/source/sv_main.c
+index 525d1cb..835e25c 100644
+--- a/source/sv_main.c
++++ b/source/sv_main.c
+@@ -24,7 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ server_t		sv;
+ server_static_t	svs;
+ 
+-char	localmodels[MAX_MODELS][5];			// inline model names for precache
++char	localmodels[MAX_MODELS][8];			// inline model names for precache
+ 
+ //============================================================================
+ 
+@@ -149,13 +149,15 @@ void SV_StartSound (edict_t *entity, int channel, char *sample, int volume,
+     
+ 	ent = NUM_FOR_EDICT(entity);
+ 
+-	channel = (ent<<3) | channel;
+-
+ 	field_mask = 0;
+ 	if (volume != DEFAULT_SOUND_PACKET_VOLUME)
+ 		field_mask |= SND_VOLUME;
+ 	if (attenuation != DEFAULT_SOUND_PACKET_ATTENUATION)
+ 		field_mask |= SND_ATTENUATION;
++	if (ent >= 8192)
++		field_mask |= SND_LARGEENTITY;
++	if (sound_num >= 256)
++		field_mask |= SND_LARGESOUND;
+ 
+ // directed messages go only to the entity the are targeted on
+ 	MSG_WriteByte (&sv.datagram, svc_sound);
+@@ -164,8 +166,17 @@ void SV_StartSound (edict_t *entity, int channel, char *sample, int volume,
+ 		MSG_WriteByte (&sv.datagram, volume);
+ 	if (field_mask & SND_ATTENUATION)
+ 		MSG_WriteByte (&sv.datagram, attenuation*64);
+-	MSG_WriteShort (&sv.datagram, channel);
+-	MSG_WriteByte (&sv.datagram, sound_num);
++	if (field_mask & SND_LARGEENTITY)
++	{
++		MSG_WriteShort (&sv.datagram, ent);
++		MSG_WriteByte (&sv.datagram, channel);
++	}
++	else
++		MSG_WriteShort (&sv.datagram, (ent<<3) | channel);
++	if (field_mask & SND_LARGESOUND)
++		MSG_WriteShort (&sv.datagram, sound_num);
++	else
++		MSG_WriteByte (&sv.datagram, sound_num);
+ 	for (i=0 ; i<3 ; i++)
+ 		MSG_WriteCoord (&sv.datagram, entity->v.origin[i]+0.5*(entity->v.mins[i]+entity->v.maxs[i]));
+ }           
+@@ -196,7 +207,7 @@ void SV_SendServerinfo (client_t *client)
+ 	MSG_WriteString (&client->message,message);
+ 
+ 	MSG_WriteByte (&client->message, svc_serverinfo);
+-	MSG_WriteLong (&client->message, PROTOCOL_VERSION);
++	MSG_WriteLong (&client->message, PROTOCOL_FITZQUAKE);	// so maps can have more than 256 models and sounds
+ 	MSG_WriteByte (&client->message, svs.maxclients);
+ 
+ 	if (!coop.value && deathmatch.value)
+@@ -457,7 +468,7 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
+ 				continue;		// not visible
+ 		}
+ 
+-		if (msg->maxsize - msg->cursize < 16)
++		if (msg->maxsize - msg->cursize < 32)
+ 		{
+ 			Con_Printf ("packet overflow\n");
+ 			return;
+@@ -500,9 +511,19 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
+ 		if (ent->baseline.modelindex != ent->v.modelindex)
+ 			bits |= U_MODEL;
+ 
++		if ((bits & U_FRAME) && ((int)ent->v.frame & 0xFF00))
++			bits |= U_FRAME2;
++		if ((bits & U_MODEL) && ((int)ent->v.modelindex & 0xFF00))
++			bits |= U_MODEL2;
++
+ 		if (e >= 256)
+ 			bits |= U_LONGENTITY;
+-			
++
++		if (bits >= 65536)
++			bits |= U_EXTEND1;
++		if (bits >= 16777216)
++			bits |= U_EXTEND2;
++
+ 		if (bits >= 256)
+ 			bits |= U_MOREBITS;
+ 
+@@ -510,9 +531,13 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
+ 	// write the message
+ 	//
+ 		MSG_WriteByte (msg,bits | U_SIGNAL);
+-		
++
+ 		if (bits & U_MOREBITS)
+ 			MSG_WriteByte (msg, bits>>8);
++		if (bits & U_EXTEND1)
++			MSG_WriteByte (msg, bits>>16);
++		if (bits & U_EXTEND2)
++			MSG_WriteByte (msg, bits>>24);
+ 		if (bits & U_LONGENTITY)
+ 			MSG_WriteShort (msg,e);
+ 		else
+@@ -540,6 +565,10 @@ void SV_WriteEntitiesToClient (edict_t	*clent, sizebuf_t *msg)
+ 			MSG_WriteCoord (msg, ent->v.origin[2]);
+ 		if (bits & U_ANGLE3)
+ 			MSG_WriteAngle(msg, ent->v.angles[2]);
++		if (bits & U_FRAME2)
++			MSG_WriteByte (msg, (int)ent->v.frame >> 8);
++		if (bits & U_MODEL2)
++			MSG_WriteByte (msg, (int)ent->v.modelindex >> 8);
+ 	}
+ }
+ 
+@@ -572,6 +601,7 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
+ {
+ 	int		bits;
+ 	int		i;
++	int		weaponmodel;
+ 	edict_t	*other;
+ 	int		items;
+ 	eval_t	*val;
+@@ -648,10 +678,37 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
+ //	if (ent->v.weapon)
+ 		bits |= SU_WEAPON;
+ 
++	// PROTOCOL_FITZQUAKE: the high bytes of values over 255
++	weaponmodel = SV_ModelIndex(pr_strings+ent->v.weaponmodel);
++	if (weaponmodel & 0xFF00)
++		bits |= SU_WEAPON2;
++	if ((int)ent->v.armorvalue & 0xFF00)
++		bits |= SU_ARMOR2;
++	if ((int)ent->v.currentammo & 0xFF00)
++		bits |= SU_AMMO2;
++	if ((int)ent->v.ammo_shells & 0xFF00)
++		bits |= SU_SHELLS2;
++	if ((int)ent->v.ammo_nails & 0xFF00)
++		bits |= SU_NAILS2;
++	if ((int)ent->v.ammo_rockets & 0xFF00)
++		bits |= SU_ROCKETS2;
++	if ((int)ent->v.ammo_cells & 0xFF00)
++		bits |= SU_CELLS2;
++	if ((bits & SU_WEAPONFRAME) && ((int)ent->v.weaponframe & 0xFF00))
++		bits |= SU_WEAPONFRAME2;
++	if (bits >= 65536)
++		bits |= SU_EXTEND1;
++	if (bits >= 16777216)
++		bits |= SU_EXTEND2;
++
+ // send the data
+ 
+ 	MSG_WriteByte (msg, svc_clientdata);
+ 	MSG_WriteShort (msg, bits);
++	if (bits & SU_EXTEND1)
++		MSG_WriteByte (msg, bits>>16);
++	if (bits & SU_EXTEND2)
++		MSG_WriteByte (msg, bits>>24);
+ 
+ 	if (bits & SU_VIEWHEIGHT)
+ 		MSG_WriteChar (msg, ent->v.view_ofs[2]);
+@@ -675,7 +732,7 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
+ 	if (bits & SU_ARMOR)
+ 		MSG_WriteByte (msg, ent->v.armorvalue);
+ 	if (bits & SU_WEAPON)
+-		MSG_WriteByte (msg, SV_ModelIndex(pr_strings+ent->v.weaponmodel));
++		MSG_WriteByte (msg, weaponmodel);
+ 	
+ 	MSG_WriteShort (msg, ent->v.health);
+ 	MSG_WriteByte (msg, ent->v.currentammo);
+@@ -699,6 +756,23 @@ void SV_WriteClientdataToMessage (edict_t *ent, sizebuf_t *msg)
+ 			}
+ 		}
+ 	}
++
++	if (bits & SU_WEAPON2)
++		MSG_WriteByte (msg, weaponmodel >> 8);
++	if (bits & SU_ARMOR2)
++		MSG_WriteByte (msg, (int)ent->v.armorvalue >> 8);
++	if (bits & SU_AMMO2)
++		MSG_WriteByte (msg, (int)ent->v.currentammo >> 8);
++	if (bits & SU_SHELLS2)
++		MSG_WriteByte (msg, (int)ent->v.ammo_shells >> 8);
++	if (bits & SU_NAILS2)
++		MSG_WriteByte (msg, (int)ent->v.ammo_nails >> 8);
++	if (bits & SU_ROCKETS2)
++		MSG_WriteByte (msg, (int)ent->v.ammo_rockets >> 8);
++	if (bits & SU_CELLS2)
++		MSG_WriteByte (msg, (int)ent->v.ammo_cells >> 8);
++	if (bits & SU_WEAPONFRAME2)
++		MSG_WriteByte (msg, (int)ent->v.weaponframe >> 8);
+ }
+ 
+ /*
+@@ -913,7 +987,7 @@ SV_CreateBaseline
+ */
+ void SV_CreateBaseline (void)
+ {
+-	int			i;
++	int			i, bits;
+ 	edict_t			*svent;
+ 	int				entnum;	
+ 		
+@@ -948,11 +1022,24 @@ void SV_CreateBaseline (void)
+ 	//
+ 	// add to the message
+ 	//
+-		MSG_WriteByte (&sv.signon,svc_spawnbaseline);		
++		bits = 0;	// PROTOCOL_FITZQUAKE: svc_spawnbaseline2 for models and frames over 255
++		if (svent->baseline.modelindex & 0xFF00)
++			bits |= B_LARGEMODEL;
++		if (svent->baseline.frame & 0xFF00)
++			bits |= B_LARGEFRAME;
++		MSG_WriteByte (&sv.signon, bits ? svc_spawnbaseline2 : svc_spawnbaseline);
+ 		MSG_WriteShort (&sv.signon,entnum);
++		if (bits)
++			MSG_WriteByte (&sv.signon, bits);
+ 
+-		MSG_WriteByte (&sv.signon, svent->baseline.modelindex);
+-		MSG_WriteByte (&sv.signon, svent->baseline.frame);
++		if (bits & B_LARGEMODEL)
++			MSG_WriteShort (&sv.signon, svent->baseline.modelindex);
++		else
++			MSG_WriteByte (&sv.signon, svent->baseline.modelindex);
++		if (bits & B_LARGEFRAME)
++			MSG_WriteShort (&sv.signon, svent->baseline.frame);
++		else
++			MSG_WriteByte (&sv.signon, svent->baseline.frame);
+ 		MSG_WriteByte (&sv.signon, svent->baseline.colormap);
+ 		MSG_WriteByte (&sv.signon, svent->baseline.skin);
+ 		for (i=0 ; i<3 ; i++)
+diff --git a/source/world.c b/source/world.c
+index b5af5b6..a38257c 100644
+--- a/source/world.c
++++ b/source/world.c
+@@ -54,7 +54,7 @@ HULL BOXES
+ 
+ 
+ static	hull_t		box_hull;
+-static	dclipnode_t	box_clipnodes[6];
++static	mclipnode_t	box_clipnodes[6];
+ static	mplane_t	box_planes[6];
+ 
+ /*
+@@ -461,7 +461,7 @@ SV_HullPointContents
+ int SV_HullPointContents (hull_t *hull, int num, vec3_t p)
+ {
+ 	float		d;
+-	dclipnode_t	*node;
++	mclipnode_t	*node;
+ 	mplane_t	*plane;
+ 
+ 	while (num >= 0)
+@@ -547,7 +547,7 @@ SV_RecursiveHullCheck
+ */
+ qboolean SV_RecursiveHullCheck (hull_t *hull, int num, float p1f, float p2f, vec3_t p1, vec3_t p2, trace_t *trace)
+ {
+-	dclipnode_t	*node;
++	mclipnode_t	*node;
+ 	mplane_t	*plane;
+ 	float		t1, t2;
+ 	float		frac;

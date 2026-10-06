@@ -1,2 +1,4 @@
 * text=auto eol=lf
 *.jpg binary
+# engine patches apply to LF sources: never convert their line endings
+*.patch -text

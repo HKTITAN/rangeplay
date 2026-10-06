@@ -16,6 +16,7 @@ const node = (...args) => execFileSync(process.execPath, args, { stdio: 'inherit
 
 node('examples/tile-world/build.js', '--regions', values.regions || '6');
 node('examples/freedoom/build.js');
+node('examples/quake/build.js');
 
 await rm(site, { recursive: true, force: true });
 await mkdir(site, { recursive: true });
@@ -24,6 +25,7 @@ await cp(join(root, 'src'), join(site, 'src'), { recursive: true });
 const EXAMPLES = {
   'tile-world': ['index.html', 'main.js', 'engine.js', 'streamer.js', 'gpu.js', 'world.js', 'dist'],
   freedoom: ['index.html', 'main.js', 'engine.js', 'gpu.js', 'wasm', 'bootset-1.json', 'bootset-2.json', 'dist'],
+  quake: ['index.html', 'main.js', 'engine.js', 'gpu.js', 'wasm', 'bootset.json', 'bootset-start.json', 'dist'],
 };
 for (const [name, entries] of Object.entries(EXAMPLES)) {
   for (const entry of entries) {
@@ -32,6 +34,7 @@ for (const [name, entries] of Object.entries(EXAMPLES)) {
 }
 await cp(join(root, 'docs', 'tile-world.jpg'), join(site, 'tile-world.jpg'));
 await cp(join(root, 'docs', 'freedoom-card.jpg'), join(site, 'freedoom.jpg'));
+await cp(join(root, 'docs', 'quake-card.jpg'), join(site, 'quake.jpg'));
 
 await writeFile(join(site, 'index.html'), `<!doctype html>
 <html lang="en">
@@ -67,6 +70,14 @@ await writeFile(join(site, 'index.html'), `<!doctype html>
   <p class="lede">Play-as-you-download for the web. The game runs in your browser tab. Its data streams from a plain CDN as the
   engine asks for it and stays cached on your device. There are no game servers and no streamed video.</p>
   <div class="grid">
+    <a class="card" href="/examples/quake/">
+      <img src="/quake.jpg" alt="LibreQuake's first demo, running in the browser" width="800" height="600">
+      <div>
+        <h2>LibreQuake</h2>
+        <p>A 210 MB game for the Quake engine. Each level downloads when the engine loads it; levels you never visit never download.</p>
+        <p class="facts">54 maps · 414 KB engine · boot set 23 MB · demo playing in 4 s</p>
+      </div>
+    </a>
     <a class="card" href="/examples/freedoom/">
       <img src="/freedoom.jpg" alt="Freedoom, running in the browser" width="789" height="444">
       <div>
@@ -85,7 +96,7 @@ await writeFile(join(site, 'index.html'), `<!doctype html>
     </a>
   </div>
   <footer>Source, docs and the runtime: <a href="https://github.com/HKTITAN/rangeplay">github.com/HKTITAN/rangeplay</a> (MIT).
-  Freedoom data: BSD-3-Clause. Doom engine: GPL-2.0.</footer>
+  Freedoom and LibreQuake data: BSD-3-Clause (LibreQuake game code: GPL-2.0). Doom and Quake engines: GPL-2.0.</footer>
 </main>
 </body>
 </html>

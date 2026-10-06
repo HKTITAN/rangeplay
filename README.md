@@ -7,6 +7,11 @@ The network carries game data once, then mostly serves cache hits.
 **[Try the demos](https://rangeplay.vercel.app)** (best in a current Chromium-based browser, for WebGPU; others fall
 back to a 2D canvas).
 
+| [LibreQuake](https://rangeplay.vercel.app/examples/quake/): a 210 MB game, streamed a level at a time |
+| --- |
+| [![LibreQuake's first demo in the browser, with rangeplay's streaming stats above it](docs/quake.jpg)](https://rangeplay.vercel.app/examples/quake/) |
+| The Quake engine, compiled with Emscripten and brought up to what modern maps need (engine.patch), plays a 4-episode game of 54 maps. Each level downloads when the engine loads it. From an empty cache, the first demo's 9.8 MB level is loaded in **4.1 s** with a boot set (19.7 s without), and levels you never visit never download. |
+
 | [Freedoom](https://rangeplay.vercel.app/examples/freedoom/): a complete game | [tile-world](https://rangeplay.vercel.app/examples/tile-world/): a streamed world |
 | --- | --- |
 | [![Freedoom running in the browser, with rangeplay's streaming stats above it](docs/freedoom.jpg)](https://rangeplay.vercel.app/examples/freedoom/) | [![tile-world: a 144 MB landscape streamed as you look at it](docs/tile-world.jpg)](https://rangeplay.vercel.app/examples/tile-world/) |
