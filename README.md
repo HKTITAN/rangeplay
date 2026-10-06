@@ -4,8 +4,49 @@
 data from any CDN while it plays. There are no game servers and no data-center GPUs, and nothing is video-encoded.
 The network carries game data once, then mostly serves cache hits.
 
+[![The explainer: a tldraw whiteboard drawing itself, from a 100 GB game in a browser tab to how rangeplay streams one](docs/explainer-preview.webp)](https://rangeplay.vercel.app/video/)
+
+**[▶ Watch the 2-minute explainer](https://rangeplay.vercel.app/video/)** (with sound) ·
 **[Try the demos](https://rangeplay.vercel.app)** (best in a current Chromium-based browser, for WebGPU; others fall
-back to a 2D canvas).
+back to a 2D canvas)
+
+## Why I built this
+
+On 6 October 2026 I came across someone running GTA V in a web browser. GTA V takes more than 100 GB on disk, and
+there it was, playing in a browser tab. I found that fascinating, so I took it apart to see how it worked. It didn't
+download the game first. It started playing after about 2 GB, and fetched the rest while you played.
+
+![tldraw: GTA V in a browser tab, and the game as a bar: about 2 GB to start playing, the rest fetched while you play](docs/explainers/taking-it-apart.png)
+
+Cloud gaming already promises games without installs, but the way it delivers them is a livestream you can control.
+The game runs on a GPU in a data center, and every frame is encoded and sent to you, for as long as you play.
+
+What if a game worked like a video instead? A video never downloads before it plays: it loads the next few seconds,
+just before you need them. A game can do the same with its data. It runs on your own device and fetches each level as
+you reach it, then rebuilds it locally into a smooth, on-device experience. Instead of installing games, you would
+open them the way you open a video. Imagine Netflix, for games.
+
+| Cloud gaming: a livestream you can control | What if games loaded like a video? |
+| --- | --- |
+| ![tldraw: a data center GPU runs the game and sends you a video of every frame; your input goes back](docs/explainers/cloud-gaming.png) | ![tldraw: a video player whose buffer stays just ahead of the playhead](docs/explainers/like-a-video.png) |
+
+![tldraw: the game runs on your device and fetches each level as you reach it; imagine Netflix, for games](docs/explainers/netflix-for-games.png)
+
+Fortnite is already heading there. It runs whole games inside one app: Battle Royale, Save the World, LEGO Fortnite,
+Festival. You pick one and play, with nothing else to install. And the Unreal Engine 6 teaser (May 2026, the engine
+that merges Unreal Engine 5 with UEFN around Verse) showed Rocket League at `verse://rocketleague.com`, right next to
+Fortnite, LEGO and Disney. I think this could be a really interesting model for gaming.
+
+![fortnite.com showing whole games by Epic side by side, and the Unreal Engine 6 teaser frame with verse://rocketleague.com](docs/explainers/fortnite.jpg)
+
+<sub>Screenshots: Epic Games (fortnite.com; the teaser frame as captured by Shacknews), shown here for commentary.
+Portions of the materials used are trademarks and/or copyrighted works of Epic Games, Inc. This project is not
+affiliated with or endorsed by Epic.</sub>
+
+So I built an open-source version for any engine. rangeplay is a clean-room implementation: it contains no code or
+data from that port, or from GTA V. The demos below run free games: Freedoom, LibreQuake, and a generated world.
+
+## Demos
 
 | [LibreQuake](https://rangeplay.vercel.app/examples/quake/): a 210 MB game, streamed a level at a time |
 | --- |
@@ -38,6 +79,13 @@ Cloud gaming still wins for high-end games on weak devices. rangeplay fits games
 hardware but should start from a link: web distribution, demos, back catalogs, user-generated content.
 
 ## How it works
+
+![tldraw: the game engine (WebAssembly) reads a file; the IO worker fetches just those bytes from any CDN with an HTTP Range request and keeps them in a cache on your device](docs/explainers/how-it-works.png)
+
+![tldraw: a boot set fills the cache before the engine asks; frames, input and sound travel through shared memory; no game servers, no video](docs/explainers/boot-sets-shared-memory.png)
+
+The drawings come from one tldraw board, [docs/explainers/rangeplay.tldr](docs/explainers/rangeplay.tldr): open it in
+[tldraw](https://www.tldraw.com) to see the whole story on one canvas. In detail:
 
 ```mermaid
 flowchart LR
@@ -106,6 +154,9 @@ see a first visit again, and add `?nobootset=1` to see what the boot set saves. 
 
 ## Examples
 
+- **[examples/quake](examples/quake):** the Quake engine and a modern 210 MB game. It covers serving reads the engine
+  makes with `fopen` (demos played straight from the pak), a palette-lookup GPU handler, an old DMA-style sound mixer
+  on the audio ring, and bringing a 1996 engine up to what today's maps need.
 - **[examples/freedoom](examples/freedoom):** a native engine ported to rangeplay. It covers the platform layer in C,
   the Emscripten build, a recorded boot set and background install. Read this one if you have a C or C++ engine.
 - **[examples/tile-world](examples/tile-world):** an engine written in JavaScript. It covers archives with tables of
@@ -203,11 +254,13 @@ This is version 0.1, and experimental. What is tested:
 - The IO path end to end in Node: real HTTP, engine threads in `worker_threads`, both stores, 503 storms, stalled
   and misbehaving servers, damaged caches, cache reuse across sessions and versions, boot sets and hints.
 - The C header natively (6 threads, 18,000 reads; 200,000 ring records) with `-Wall -Wextra -Werror`.
-- A real engine through the C header: the Doom engine built with Emscripten in CI, and played in Chromium.
+- Real engines through the C header: the Doom and Quake engines built with Emscripten in CI, and played in Chromium.
+  All 54 LibreQuake maps load and its three demos play in a headless build of the same engine.
 
 Not done yet:
 
-- Music in the Freedoom example. Its sound effects play; Doom's music is MIDI and needs a synthesizer.
+- Music in the Freedoom and LibreQuake examples. Their sound effects play; Doom's music is MIDI and needs a
+  synthesizer, and LibreQuake's is Ogg Vorbis, which the 1996 Quake engine cannot play.
 - Store compaction. Space held by old versions is only reclaimed when more than half of a large store is dead.
 - Bundling small files into packs, per-block compression, and offline start (a service worker for the page itself).
 

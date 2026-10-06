@@ -2,3 +2,6 @@
 *.jpg binary
 # engine patches apply to LF sources: never convert their line endings
 *.patch -text
+*.mp4 binary
+*.webp binary
+*.png binary
