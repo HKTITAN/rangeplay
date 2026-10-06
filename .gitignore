@@ -1,0 +1,6 @@
+node_modules/
+examples/*/.assets/
+examples/*/dist/
+recordings/
+*.log
+.DS_Store

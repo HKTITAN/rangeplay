@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tile-world · rangeplay demo</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; --bg: #0b1424; --panel: rgba(8, 14, 26, 0.84); --line: rgba(255, 255, 255, 0.1); --text: #e7ecf3; --dim: #93a1b5; --ok: #6fd39a; --warn: #f2c464; --accent: #7cb7ff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+  #hud { position: fixed; top: 12px; left: 12px; width: 300px; max-width: calc(100vw - 24px); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(8px); }
+  #hud h1 { font-size: 14px; margin: 0 0 2px; font-weight: 650; letter-spacing: 0.01em; }
+  #hud p.sub { margin: 0 0 10px; color: var(--dim); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; }
+  dt { color: var(--dim); }
+  dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .sep { grid-column: 1 / -1; height: 1px; background: var(--line); margin: 6px 0; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); }
+  .bar { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 120ms ease-out; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  button { font: inherit; color: var(--text); background: rgba(255, 255, 255, 0.07); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+  button:hover { background: rgba(255, 255, 255, 0.13); }
+  .keys { margin-top: 10px; color: var(--dim); font-size: 12px; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; color: var(--text); }
+  #error { position: fixed; inset: 0; display: none; place-items: center; padding: 24px; background: var(--bg); }
+  #error div { max-width: 560px; border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; background: var(--panel); }
+  #error h2 { margin: 0 0 8px; font-size: 16px; }
+  @media (max-width: 520px) { #hud { width: auto; right: 12px; } }
+</style>
+</head>
+<body>
+<canvas id="view" tabindex="0" aria-label="tile-world: a streamed landscape"></canvas>
+<section id="hud" aria-live="off">
+  <h1>tile-world</h1>
+  <p class="sub">144 MB of terrain, streamed as you look at it</p>
+  <dl>
+    <dt>Renderer</dt><dd id="backend">…</dd>
+    <dt>Cache</dt><dd id="store">…</dd>
+    <dt>Engine started in</dt><dd id="boot">…</dd>
+    <dt>Frame rate</dt><dd id="fps">…</dd>
+    <div class="sep"></div>
+    <dt>Boot set</dt><dd id="bootset">…</dd>
+    <div class="bar"><i id="bootbar"></i></div>
+    <dt>Downloaded</dt><dd id="net">…</dd>
+    <dt>Requests in flight</dt><dd id="inflight">…</dd>
+    <dt>Cached on this device</dt><dd id="cached">…</dd>
+    <div class="sep"></div>
+    <dt>Engine reads</dt><dd id="reads">…</dd>
+    <dt>…that waited</dt><dd id="waited">…</dd>
+    <dt>Hints</dt><dd id="hints">…</dd>
+    <dt>Tiles on screen</dt><dd id="tiles">…</dd>
+  </dl>
+  <div class="buttons">
+    <button id="auto">Autopilot</button>
+    <button id="clear">Clear cache and reload</button>
+    <button id="record">Record boot set</button>
+  </div>
+  <div class="keys"><kbd>WASD</kbd> or drag to move, wheel or <kbd>Q</kbd>/<kbd>E</kbd> to zoom, <kbd>F</kbd> autopilot</div>
+</section>
+<div id="error" role="alert"><div><h2>Can't start</h2><p id="error-text"></p></div></div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

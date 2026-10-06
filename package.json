@@ -1,0 +1,35 @@
+{
+  "name": "rangeplay",
+  "version": "0.1.0",
+  "description": "Play-as-you-download for the web: run a native game engine in the browser and stream its data from any CDN with HTTP Range requests.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Harshit Khemani",
+  "keywords": ["webassembly", "webgpu", "game", "streaming", "opfs", "cdn", "http-range", "emscripten", "sharedarraybuffer"],
+  "bin": {
+    "rangeplay": "tools/cli.js"
+  },
+  "exports": {
+    "./host": "./src/host.js",
+    "./engine": "./src/engine.js",
+    "./layout": "./src/shared/layout.js",
+    "./ring": "./src/shared/ring.js",
+    "./manifest": "./src/shared/manifest.js",
+    "./bootset": "./src/shared/bootset.js",
+    "./io-core": "./src/io/core.js",
+    "./io-worker": "./src/io-worker.js",
+    "./gpu-worker": "./src/gpu-worker.js",
+    "./tools/pack": "./tools/pack.js",
+    "./tools/serve": "./tools/serve.js"
+  },
+  "files": ["src", "tools", "native/rangeplay.h", "docs", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "test:native": "node test/native/run.js",
+    "demo:build": "node examples/tile-world/build.js",
+    "demo": "node tools/cli.js serve . --latency 40 --rate 3000"
+  }
+}
