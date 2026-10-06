@@ -25,6 +25,7 @@ try {
     onLog: (line) => console.log(line),
     onError: (e) => showError(e.message),
   });
+  $('sub').textContent = `${Math.round(game.files.totalBytes() / 1048576)} MB of terrain, streamed as you look at it`;
   const { backend } = await game.ready;
   $('backend').textContent = backend === 'webgpu' ? 'WebGPU' : '2D canvas';
   canvas.focus();

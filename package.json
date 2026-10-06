@@ -5,7 +5,17 @@
   "type": "module",
   "license": "MIT",
   "author": "Harshit Khemani",
-  "keywords": ["webassembly", "webgpu", "game", "streaming", "opfs", "cdn", "http-range", "emscripten", "sharedarraybuffer"],
+  "keywords": [
+    "webassembly",
+    "webgpu",
+    "game",
+    "streaming",
+    "opfs",
+    "cdn",
+    "http-range",
+    "emscripten",
+    "sharedarraybuffer"
+  ],
   "bin": {
     "rangeplay": "tools/cli.js"
   },
@@ -22,14 +32,22 @@
     "./tools/pack": "./tools/pack.js",
     "./tools/serve": "./tools/serve.js"
   },
-  "files": ["src", "tools", "native/rangeplay.h", "docs", "README.md", "LICENSE"],
+  "files": [
+    "src",
+    "tools",
+    "native/rangeplay.h",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node --test test/*.test.js",
     "test:native": "node test/native/run.js",
     "demo:build": "node examples/tile-world/build.js",
-    "demo": "node tools/cli.js serve . --latency 40 --rate 3000"
+    "demo": "node tools/cli.js serve . --latency 40 --rate 3000",
+    "build:site": "node scripts/build-site.js"
   }
 }

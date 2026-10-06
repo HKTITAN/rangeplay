@@ -4,3 +4,5 @@ examples/*/dist/
 recordings/
 *.log
 .DS_Store
+site/
+.vercel/
