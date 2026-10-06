@@ -4,7 +4,9 @@
 // Messages from the page:   { type: 'init', manifest, manifestUrl, bootsetUrl, record, persist, options, enginePort }
 //                           { type: 'take-recording' }  -> { type: 'recording', bootset }
 //                           { type: 'clear' }           -> { type: 'cleared' }  (closes and deletes the store)
-//                           { type: 'close' }           (the page is going away: release the store for the next load)
+//                           { type: 'suspend' }         (page hidden: release the persistent store, cache in memory)
+//                           { type: 'resume' }          (page shown again: take the persistent store back)
+//                           { type: 'close' }           -> { type: 'closed' }  (flushes and closes the store)
 // Messages from the engine (enginePort): { type: 'attach', memory, controlOffset }  memory: SharedArrayBuffer or a
 //                                        shared WebAssembly.Memory
 // To the page:              { type: 'ready', store }, { type: 'stats', stats }, { type: 'log', text }, { type: 'error', message }
@@ -12,12 +14,14 @@
 import { IoCore } from './io/core.js';
 import { Fetcher } from './io/fetcher.js';
 import { MemoryStore } from './io/store-memory.js';
-import { deleteOpfsStore, openOpfsStore } from './io/store-opfs.js';
+import { deleteOpfsStore, lockStore, openOpfsStore } from './io/store-opfs.js';
 import { FileTable } from './shared/manifest.js';
 
 let core = null;
 let ready = null;
 let files = null;
+let options = {};
+let persist = true;
 let statsTimer = 0;
 let lastStats = '';
 
@@ -25,8 +29,9 @@ const log = (text) => self.postMessage({ type: 'log', text });
 
 async function init(m) {
   files = new FileTable(m.manifest, m.manifestUrl);
-  const options = m.options || {};
-  let store = m.persist === false ? null : await openOpfsStore({ files, log, maxBytes: options.maxStoreBytes });
+  options = m.options || {};
+  persist = m.persist !== false;
+  let store = persist ? await openOpfsStore({ files, log, maxBytes: options.maxStoreBytes }) : null;
   // Without a persistent store the browser's HTTP cache is the only cache across visits: let it keep responses.
   const fetcher = new Fetcher({ log, cache: store ? 'no-store' : 'default' });
   if (!store) store = new MemoryStore({ files, maxBytes: options.memoryCacheBytes ?? 256 * 1048576 });
@@ -76,17 +81,34 @@ self.onmessage = async (ev) => {
     case 'clear':
       await ready.catch(() => {});
       clearInterval(statsTimer);
-      core?.close();
+      // Delete while holding the store's lock, so that no other page opens it in between.
+      let release = core?.close({ keepLock: true }) || null;
+      if (!release && files) release = await lockStore(files.name);
       try {
-        await deleteOpfsStore(files.name);
+        if (release) await deleteOpfsStore(files.name);
+        else log('[io] another tab is using the cache: not deleted');
       } catch (e) {
         log('[io] could not delete the store: ' + e.message);
+      } finally {
+        release?.();
       }
       self.postMessage({ type: 'cleared' });
       break;
+    case 'suspend':
+      await ready?.catch(() => {});
+      if (core && core.store.kind === 'opfs') core.swapStore(new MemoryStore({ files, maxBytes: options.memoryCacheBytes ?? 256 * 1048576 }));
+      break;
+    case 'resume': {
+      await ready?.catch(() => {});
+      if (!core || core.store.kind === 'opfs' || !persist) break;
+      const store = await openOpfsStore({ files, log, maxBytes: options.maxStoreBytes });
+      if (store) core.swapStore(store);
+      break;
+    }
     case 'close':
       clearInterval(statsTimer);
       core?.close();
+      self.postMessage({ type: 'closed' });
       break;
   }
 };

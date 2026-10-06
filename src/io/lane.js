@@ -15,9 +15,10 @@ export class Lane {
     this.queue = [];
   }
 
-  // fn(promoted) runs when a place is free; returns { promise, promote }.
-  run(fn) {
-    const task = { fn, started: false, counted: false, resolve: null, reject: null };
+  // fn(promoted) runs when a place is free; onDrop() is called synchronously if the task is dropped before it starts.
+  // Returns { promise, promote }.
+  run(fn, onDrop = null) {
+    const task = { fn, onDrop, started: false, counted: false, resolve: null, reject: null };
     const promise = new Promise((resolve, reject) => {
       task.resolve = resolve;
       task.reject = reject;
@@ -38,6 +39,7 @@ export class Lane {
     while (this.queue.length > max) {
       const task = this.queue.shift();
       task.started = true;
+      task.onDrop?.();
       task.reject(new DroppedError());
     }
   }

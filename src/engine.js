@@ -8,7 +8,7 @@
 // Any other thread of the engine (a worker it starts) gets its own client: IoClient.fromShared(rt.shared()).
 
 import {
-  ERR_BADF, ERR_INVAL, ERR_IO, HINT_FILE, HINT_LEN_FLAGS, HINT_LEN_MASK, HINT_OFF_HI, HINT_OFF_LO, HINT_SPECULATIVE,
+  ERR_BADF, ERR_INVAL, ERR_IO, HINT_FILE, HINT_LEN_FLAGS, HINT_LEN_MASK, HINT_OFF_HI, HINT_OFF_LO, HINT_SEQ, HINT_SPECULATIVE,
   INPUT_WORDS, IO_DOORBELL_W, IO_HEADER_WORDS, IO_HINT_CAP_W, IO_HINT_HEAD_W, IO_MAGIC, IO_MAGIC_W, IO_READY_W,
   IO_SLOT_CAP_W, IO_SLOT_NEXT_W, OP_FRAME_END, SLOT_DONE, SLOT_DST_HI, SLOT_DST_LO, SLOT_FILE, SLOT_FLAGS, SLOT_IDLE,
   SLOT_LEN, SLOT_OFF_HI, SLOT_OFF_LO, SLOT_REQUESTED, SLOT_RESULT, SLOT_STATE, alignUp, initIoControl, ioControlBytes,
@@ -104,14 +104,17 @@ export class IoClient {
   // Announces a read the engine will make soon, so the IO worker can fetch it now. speculative: might not be read at
   // all (fetched at low priority, after announced reads). Never blocks; old hints are overwritten if the ring is full.
   hint(file, offset, length, speculative = false) {
-    if (!this.hintCap || !(length > 0)) return;
+    const len = Math.min(Math.floor(length), HINT_LEN_MASK);
+    if (!this.hintCap || !(len > 0)) return;
     const a = this.a;
-    const i = Atomics.add(a, IO_HINT_HEAD_W, 1) >>> 0;
-    const e = ioHintWord(this.slotCap, i & (this.hintCap - 1));
+    const i = Atomics.add(a, IO_HINT_HEAD_W, 1);
+    const e = ioHintWord(this.slotCap, (i >>> 0) & (this.hintCap - 1));
+    Atomics.store(a, e + HINT_SEQ, ~(i + 1));   // being written
     a[e + HINT_FILE] = file;
     a[e + HINT_OFF_LO] = offset >>> 0;
     a[e + HINT_OFF_HI] = Math.floor(offset / 4294967296);
-    Atomics.store(a, e + HINT_LEN_FLAGS, Math.min(length, HINT_LEN_MASK) | (speculative ? HINT_SPECULATIVE : 0));
+    a[e + HINT_LEN_FLAGS] = len | (speculative ? HINT_SPECULATIVE : 0);
+    Atomics.store(a, e + HINT_SEQ, (i + 1) | 0);   // published
     Atomics.add(a, IO_DOORBELL_W, 1);
     Atomics.notify(a, IO_DOORBELL_W);
   }
@@ -190,21 +193,24 @@ export class BumpHeap {
   }
 }
 
-function nextMessage(type) {
-  return new Promise((resolve) => {
+// The host's start message is caught as soon as this module is evaluated: a worker that awaits something before
+// calling connect() (instantiating its wasm, say) would otherwise miss it. Import this module statically.
+const startMessage = typeof self !== 'undefined' && typeof self.addEventListener === 'function' && typeof document === 'undefined'
+  ? new Promise((resolve) => {
     const on = (ev) => {
-      if (ev.data?.type !== type) return;
+      if (ev.data?.type !== 'rangeplay:start') return;
       self.removeEventListener('message', on);
       resolve(ev.data);
     };
     self.addEventListener('message', on);
-  });
-}
+  })
+  : null;
 
 // Sets up the engine's shared memory and connects it to the runtime's workers. Call once, in the engine worker that
 // host.js started. Layout of the SharedArrayBuffer: [IO control block][command ring][input ring][heap].
 export async function connect({ heapBytes = 64 * 1048576, ioSlots = 16, hintCap = 1024, gpuRingBytes = 4 * 1048576, inputCap = 256, maxFramesInFlight = 2 } = {}) {
-  const start = await nextMessage('rangeplay:start');
+  if (!startMessage) throw new Error('connect() runs in the engine worker that host.js starts');
+  const start = await startMessage;
   const ioOffset = 0;
   const gpuOffset = alignUp(ioOffset + ioControlBytes(ioSlots, hintCap), 64);
   const inputOffset = alignUp(gpuOffset + CommandRing.bytes(gpuRingBytes), 64);

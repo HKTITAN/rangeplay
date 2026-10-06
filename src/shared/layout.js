@@ -42,11 +42,12 @@ export const SLOT_DONE = 3;
 
 export const READ_NO_READAHEAD = 1;
 
-export const IO_HINT_WORDS = 4;
-export const HINT_FILE = 0;
-export const HINT_OFF_LO = 1;
-export const HINT_OFF_HI = 2;
-export const HINT_LEN_FLAGS = 3;    // written last; 0 = empty entry
+export const IO_HINT_WORDS = 8;
+export const HINT_SEQ = 0;          // hint i is published as i + 1, and holds ~(i + 1) while being written
+export const HINT_FILE = 1;
+export const HINT_OFF_LO = 2;
+export const HINT_OFF_HI = 3;
+export const HINT_LEN_FLAGS = 4;    // length, plus HINT_SPECULATIVE
 export const HINT_SPECULATIVE = 0x40000000;
 export const HINT_LEN_MASK = 0x3fffffff;
 
@@ -69,7 +70,7 @@ export function ioHintWord(slots, entry) {
 export function initIoControl(buffer, byteOffset, slots, hintCap) {
   if (byteOffset % 8) throw new RangeError('the IO control block must be 8-byte aligned');
   if (!(slots > 0)) throw new RangeError('at least one IO slot is needed');
-  if (hintCap && !isPowerOfTwo(hintCap)) throw new RangeError('the hint ring capacity must be a power of two');
+  if (hintCap && (!isPowerOfTwo(hintCap) || hintCap < 2)) throw new RangeError('the hint ring capacity must be 0 or a power of two, at least 2');
   const words = ioControlBytes(slots, hintCap) / 4;
   const a = new Int32Array(buffer, byteOffset, words);
   a.fill(0);

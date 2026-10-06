@@ -11,8 +11,8 @@ around; compare them with `(a - b) mod 2^32`. Words marked *atomic* are only rea
 ```
 header   16 words
 slots    SLOT_CAP x 16 words
-hints    HINT_CAP x 4 words
-size     (16 + 16 * SLOT_CAP + 4 * HINT_CAP) * 4 bytes
+hints    HINT_CAP x 8 words
+size     (16 + 16 * SLOT_CAP + 8 * HINT_CAP) * 4 bytes
 ```
 
 | Header word | Name        | Written by                   | Meaning                                                    |
@@ -22,7 +22,7 @@ size     (16 + 16 * SLOT_CAP + 4 * HINT_CAP) * 4 bytes
 | 2           | DOORBELL    | engine, atomic add + notify  | bumped after every request and every hint                  |
 | 3           | SLOT_CAP    | engine (init)                | number of slots                                            |
 | 4           | SLOT_NEXT   | engine threads, atomic add   | slots handed out; a thread claims slot `add(SLOT_NEXT, 1)` |
-| 5           | HINT_CAP    | engine (init)                | hint ring entries: a power of two, or 0                    |
+| 5           | HINT_CAP    | engine (init)                | hint ring entries: a power of two (at least 2), or 0       |
 | 6           | HINT_HEAD   | engine threads, atomic add   | hints claimed                                              |
 | 7           | HINT_TAIL   | IO worker, atomic store      | hints consumed                                             |
 | 8           | READY       | IO worker, atomic + notify   | 1 once the IO worker serves this block                     |
@@ -61,15 +61,31 @@ made during a scan is never missed. Requests are served concurrently: a slow rea
 
 ### Hint ring
 
-Each entry is 4 words: FILE, OFF low, OFF high, LEN_FLAGS. LEN_FLAGS is written last, and 0 means empty. Its low 30
-bits are the length; bit 30 marks a *speculative* hint (might not be read; fetched at low priority after announced
-reads).
+Each entry is 8 words: SEQ, FILE, OFF low, OFF high, LEN_FLAGS, then 3 reserved. LEN_FLAGS holds the length in its
+low 30 bits; bit 30 marks a *speculative* hint, which might not be read and is fetched at low priority after
+announced reads.
 
-To hint: `i = atomic add(HINT_HEAD, 1)`; write the entry at `i mod HINT_CAP`; atomic store LEN_FLAGS; bump and notify
-DOORBELL. The IO worker consumes entries from HINT_TAIL in order. It stops at an entry whose LEN_FLAGS is still 0
-(claimed, not written yet), zeroes each entry it takes, and stores HINT_TAIL. If producers get more than HINT_CAP
-ahead, the oldest hints are overwritten and skipped. Hints are advisory: a torn or stale entry costs at most one
-useless fetch, and the IO worker validates the file id and range.
+Producers (any engine thread):
+
+1. `i = atomic add(HINT_HEAD, 1)`; the entry is `i mod HINT_CAP`.
+2. Atomic store SEQ = `~(i + 1)`: "being written".
+3. Write FILE, OFF and LEN_FLAGS.
+4. Atomic store SEQ = `i + 1`: published.
+5. Bump and notify DOORBELL.
+
+The IO worker consumes entries from HINT_TAIL in order. For entry `t` it expects SEQ = `t + 1`:
+
+- **SEQ matches:** it reads the fields, then checks that SEQ has not changed meanwhile (if it has, the entry was
+  overwritten and is skipped).
+- **SEQ is the published value of a later lap** (it differs from `t + 1` by a positive multiple of HINT_CAP):
+  producers wrapped around and overwrote this hint, so it is skipped.
+- **Anything else** (an earlier lap, or the "being written" marker): the producer has not finished. The IO worker
+  stops and waits for the doorbell.
+
+The "being written" value `~(i + 1)` can never equal a published value for the same entry, because
+`2 * entry + 3` is odd and HINT_CAP is even. If producers get more than HINT_CAP ahead of HINT_TAIL, the IO worker
+jumps to `HINT_HEAD - HINT_CAP`. Entries are never cleared. Hints are advisory: when two producers race for the same
+entry a lap apart, the result costs at most one useless fetch, and the IO worker validates the file id and range.
 
 ## Command ring
 

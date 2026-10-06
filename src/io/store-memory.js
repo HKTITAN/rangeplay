@@ -98,6 +98,7 @@ export class MemoryStore {
   flush() {}
 
   close() {
+    this.pins.clear();
     this.index.clear();
     this.runs.clear();
     this.bytes = 0;

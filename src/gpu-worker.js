@@ -77,7 +77,7 @@ async function attach(memory, ringOffset) {
   handlers = await mod.setup(ctx);
   handlers.resize?.(size.width, size.height, size.dpr);
   self.postMessage({ type: 'ready', backend: ctx.backend });
-  run();
+  run().catch((e) => fail('GPU worker stopped: ' + e.message));
 }
 
 // Executes commands as they arrive; one frame at a time, paced by animation frames.
@@ -91,8 +91,14 @@ async function run() {
         return false;
       }
       const h = handlers[op];
-      if (h) h(at, len);
-      else log('[gpu] unknown opcode ' + op);
+      if (!h) log('[gpu] unknown opcode ' + op);
+      else {
+        try {
+          h(at, len);
+        } catch (e) {
+          log('[gpu] opcode ' + op + ' failed: ' + e.message);
+        }
+      }
     });
     if (frameEnded) {
       await nextFrame();

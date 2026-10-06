@@ -208,9 +208,9 @@ export class RecordRing {
   // Consumer: waits until a record is available or the timeout passes; returns peek().
   peekWait(timeoutMs = Infinity) {
     for (;;) {
-      const i = this.peek();
-      if (i >= 0) return i;
-      const w = Atomics.load(this.h, RR_WRITE_W);
+      const w = Atomics.load(this.h, RR_WRITE_W), r = Atomics.load(this.h, RR_READ_W);
+      if (w !== r) return ((r >>> 0) & (this.cap - 1)) * this.rw;
+      // waits only while WRITE still has the value just compared: a commit in between returns at once
       if (Atomics.wait(this.h, RR_WRITE_W, w, timeoutMs) === 'timed-out') return this.peek();
     }
   }

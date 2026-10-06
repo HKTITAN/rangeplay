@@ -59,10 +59,16 @@ static void *server(void *arg) {
     if (head - tail > cap) tail = head - cap;
     while (tail != head) {
       int32_t *e = a + RP_IO_HEADER_WORDS + SLOTS * RP_IO_SLOT_WORDS + (tail & (cap - 1)) * RP_IO_HINT_WORDS;
-      if (!RP__LOAD(&e[RP_HINT_LEN_FLAGS])) break;
-      RP__STORE(&e[RP_HINT_LEN_FLAGS], 0);
-      hints_seen++;
+      uint32_t want = tail + 1, s1 = (uint32_t)RP__LOAD(&e[RP_HINT_SEQ]);
+      if (s1 != want) {
+        if (((s1 - want) & (cap - 1)) == 0 && (int32_t)(s1 - want) > 0) { tail++; continue; } /* overwritten: skip */
+        break; /* not published yet */
+      }
+      int32_t lf = e[RP_HINT_LEN_FLAGS];
       tail++;
+      if ((uint32_t)RP__LOAD(&e[RP_HINT_SEQ]) != s1) continue;
+      CHECK((lf & RP_HINT_LEN_MASK) > 0, "hint with no length");
+      hints_seen++;
     }
     RP__STORE(&a[RP_IO_HINT_TAIL_W], (int32_t)tail);
     sched_yield();

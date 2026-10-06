@@ -62,11 +62,12 @@ extern "C" {
 
 #define RP_READ_NO_READAHEAD 1
 
-#define RP_IO_HINT_WORDS 4
-#define RP_HINT_FILE 0
-#define RP_HINT_OFF_LO 1
-#define RP_HINT_OFF_HI 2
-#define RP_HINT_LEN_FLAGS 3
+#define RP_IO_HINT_WORDS 8
+#define RP_HINT_SEQ 0
+#define RP_HINT_FILE 1
+#define RP_HINT_OFF_LO 2
+#define RP_HINT_OFF_HI 3
+#define RP_HINT_LEN_FLAGS 4
 #define RP_HINT_SPECULATIVE 0x40000000
 #define RP_HINT_LEN_MASK 0x3fffffff
 
@@ -119,7 +120,7 @@ extern "C" {
 
 /* ---- IO ---- */
 size_t rp_io_bytes(uint32_t slots, uint32_t hint_cap);
-/* ctl: 8-byte aligned, rp_io_bytes() long. hint_cap: a power of two, or 0 for no hints. */
+/* ctl: 8-byte aligned, rp_io_bytes() long. hint_cap: a power of two (at least 2), or 0 for no hints. */
 void rp_io_init(void *ctl, uint32_t slots, uint32_t hint_cap);
 /* Reads len bytes of file `file` (its index in manifest.json) at `offset` into dst. Blocks the calling thread until the
  * bytes are there. Returns the bytes read (short at end of file) or a negative RP_ERR_*. Each thread uses one slot,
@@ -252,11 +253,12 @@ void rp_hint(void *ctl, uint32_t file, uint64_t offset, uint32_t len, int specul
   if (!cap || !len) return;
   uint32_t i = (uint32_t)RP__ADD(&a[RP_IO_HINT_HEAD_W], 1);
   int32_t *e = a + RP_IO_HEADER_WORDS + a[RP_IO_SLOT_CAP_W] * RP_IO_SLOT_WORDS + (i & (cap - 1)) * RP_IO_HINT_WORDS;
+  RP__STORE(&e[RP_HINT_SEQ], (int32_t)~(i + 1)); /* being written */
   e[RP_HINT_FILE] = (int32_t)file;
   e[RP_HINT_OFF_LO] = (int32_t)(uint32_t)offset;
   e[RP_HINT_OFF_HI] = (int32_t)(uint32_t)(offset >> 32);
-  uint32_t lf = (len > RP_HINT_LEN_MASK ? RP_HINT_LEN_MASK : len) | (speculative ? RP_HINT_SPECULATIVE : 0);
-  RP__STORE(&e[RP_HINT_LEN_FLAGS], (int32_t)lf);
+  e[RP_HINT_LEN_FLAGS] = (int32_t)((len > RP_HINT_LEN_MASK ? RP_HINT_LEN_MASK : len) | (speculative ? RP_HINT_SPECULATIVE : 0));
+  RP__STORE(&e[RP_HINT_SEQ], (int32_t)(i + 1)); /* published */
   rp__ring_doorbell(a);
 }
 

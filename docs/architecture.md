@@ -54,6 +54,11 @@ become one request, sequential reads trigger read-ahead, and boot-set ranges clo
 least 64 KB, starts a read-ahead window that doubles up to 1 MB. Small scattered reads fetch only themselves. All of
 these thresholds are options of `IoCore`.
 
+**Distrust the network.** A response that delivers no bytes for 15 s is abandoned and retried from where it stopped.
+An HTML page, or a file whose size disagrees with the manifest, is refused rather than cached: think of a missing
+object behind a single-page app's fallback route, or a stale cache. A server that caps range sizes is asked for the
+rest. When one slice of a read fails, its sibling slices are cancelled.
+
 **Two priorities, and promotion.** Reads an engine thread is blocked on are fetched at once with `priority: 'high'`.
 Hints go through a lane of 32 concurrent fetches. Read-ahead and speculative hints use a lane of 8 at
 `priority: 'low'`; the boot set has its own 16 low-priority fetches. Without this, a blocked read can sit behind
@@ -85,14 +90,17 @@ Without it, start-up is a chain of blocking reads, one round trip each. In the d
   everything that did not change.
 
 **Append-only store with a journal.** `data.bin` only grows: a fetch reserves room at the end and streams into it.
-`journal.bin` records which block lives where, and is written only after the data it points to is flushed. A crash
-or a closed tab can lose recent blocks, but never index unwritten data. On load, entries for files not in the current
+`journal.bin` records which block lives where, and is written only after the data it points to is flushed. Entries
+are 32 bytes, so none straddles a disk page. Each carries a checksum and the store's generation (new at every reset),
+and the journal is reset before the data. Damaged or stale entries are dropped, and the journal is rewritten without
+them. A crash or a closed tab can lose recent blocks, but never index unwritten data. On load, entries for files not in the current
 manifest are dead space. When more than half of a store over 64 MB is dead, it starts over. Real compaction is on the
 roadmap.
 
 **One tab owns the store.** Sync access handles are exclusive. A Web Lock decides which tab gets the persistent store;
-a second tab falls back to an in-memory cache instead of waiting forever. On reload the page releases the store at
-`pagehide`, and the next page retries briefly while the old worker shuts down.
+a second tab falls back to an in-memory cache instead of waiting forever. At `pagehide` the page hands the store back:
+it flushes and closes it, and switches to the memory cache. The next page, or another tab, can take it. If the page
+comes back from the back/forward cache, it takes the store again.
 
 **When OPFS is unavailable or full,** the IO worker caches in memory (an LRU of fetched runs) and lets the browser's
 HTTP cache keep responses (`cache: 'default'` instead of `'no-store'`). A read pins its blocks until it has copied

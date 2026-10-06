@@ -164,8 +164,8 @@ Firefox and Safari are untested; reports are welcome.
 
 This is version 0.1, and experimental. What is tested:
 
-- The IO path end to end in Node: real HTTP, engine threads in `worker_threads`, both stores, 503 storms, cache reuse
-  across sessions and versions, boot sets and hints.
+- The IO path end to end in Node: real HTTP, engine threads in `worker_threads`, both stores, 503 storms, stalled
+  and misbehaving servers, damaged caches, cache reuse across sessions and versions, boot sets and hints.
 - The C header natively (6 threads, 18,000 reads; 200,000 ring records) with `-Wall -Wextra -Werror`.
 - The demo in Chromium.
 

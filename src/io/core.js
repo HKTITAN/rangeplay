@@ -3,13 +3,14 @@
 // No DOM, no worker globals: io-worker.js runs it in the browser, the tests run it on Node.
 
 import {
-  ERR_BADF, ERR_INVAL, ERR_IO, HINT_FILE, HINT_LEN_FLAGS, HINT_LEN_MASK, HINT_OFF_HI, HINT_OFF_LO, HINT_SPECULATIVE,
+  ERR_BADF, ERR_INVAL, ERR_IO, HINT_FILE, HINT_LEN_FLAGS, HINT_LEN_MASK, HINT_OFF_HI, HINT_OFF_LO, HINT_SEQ, HINT_SPECULATIVE,
   IO_DOORBELL_W, IO_HINT_CAP_W, IO_HINT_HEAD_W, IO_HINT_TAIL_W, IO_MAGIC, IO_MAGIC_W, IO_READY_W, IO_SLOT_CAP_W,
   IO_SLOT_NEXT_W, READ_NO_READAHEAD, SLOT_DONE, SLOT_DST_HI, SLOT_DST_LO, SLOT_FILE, SLOT_FLAGS, SLOT_LEN, SLOT_OFF_HI,
   SLOT_OFF_LO, SLOT_REQUESTED, SLOT_RESULT, SLOT_STATE, SLOT_TAKEN, ioHintWord, ioSlotWord,
 } from '../shared/layout.js';
 import { BOOTSET_FORMAT, mergeRanges, validateBootset } from '../shared/bootset.js';
 import { DroppedError, Lane } from './lane.js';
+import { MemoryStore } from './store-memory.js';
 
 export const DEFAULT_OPTIONS = {
   demandSliceBytes: 256 * 1024,   // a blocking read larger than this is fetched as parallel slices (latency-bound hosts)
@@ -22,6 +23,7 @@ export const DEFAULT_OPTIONS = {
   bootConcurrency: 16,            // boot set fetches, low fetch priority
   maxQueuedHints: 2048,           // older queued hints are dropped beyond this
   bootGapBytes: 64 * 1024,        // boot set ranges closer than this are fetched as one
+  memoryCacheBytes: 256 * 1048576, // size of the in-memory cache when there is no persistent one
 };
 
 const now = () => (globalThis.performance ? performance.now() : Date.now());
@@ -101,7 +103,9 @@ export class IoCore {
       // An engine thread waits on demand reads: big ones go as parallel slices, since on many hosts a single stream is
       // limited by round trips, not by the link. Background runs go whole: their speed is the number in flight.
       const slice = cls === 'demand' || promoted ? Math.max(bs, this.opts.demandSliceBytes - (this.opts.demandSliceBytes % bs)) : bytes;
-      const run = this.store.beginRun(id, a, bytes);
+      const store = this.store;
+      const run = store.beginRun(id, a, bytes);
+      const abort = new AbortController();   // one failed slice cancels its siblings
       this.stats.fetches++;
       this.stats.fetchesActive++;
       try {
@@ -110,23 +114,31 @@ export class IoCore {
           const n = Math.min(slice, bytes - s);
           parts.push(this.fetcher.range(url, start + s, start + s + n - 1, {
             priority,
+            size: this.files.size(id),
+            signal: abort.signal,
             onChunk: (chunk, pos) => run.write(chunk, s + pos),
           }).then((got) => {
             if (got !== n) throw new Error(this.files.path(id) + ': the server has ' + (start + s + got) + ' bytes, the manifest says ' + this.files.size(id));
           }));
         }
         await Promise.all(parts);
-        this.store.endRun(run);
+        store.endRun(run);
+      } catch (e) {
+        abort.abort(e);
+        store.abortRun?.(run);
+        throw e;
       } finally {
         this.stats.fetchesActive--;
       }
     };
-    const lane = cls === 'hint' ? this.hintLane : cls === 'low' ? this.lowLane : null;
-    const task = lane ? lane.run(exec) : { promise: exec(false), promote: null };
-    const entry = { promise: null, promote: task.promote };
-    entry.promise = task.promise.finally(() => {
+    const forget = () => {
       for (let k = a; k <= b; k++) if (this.inflight.get(this.key(id, k)) === entry) this.inflight.delete(this.key(id, k));
-    });
+    };
+    const lane = cls === 'hint' ? this.hintLane : cls === 'low' ? this.lowLane : null;
+    // A queued fetch dropped from its lane leaves the in-flight map at once, so nobody joins it in the meantime.
+    const task = lane ? lane.run(exec, forget) : { promise: exec(false), promote: null };
+    const entry = { promise: null, promote: task.promote };
+    entry.promise = task.promise.finally(forget);
     entry.promise.catch(() => {});
     for (let k = a; k <= b; k++) this.inflight.set(this.key(id, k), entry);
     if (lane) lane.trim(this.opts.maxQueuedHints);
@@ -255,8 +267,18 @@ export class IoCore {
         }
       }
       this.#views();
+      let copied;
+      try {
+        copied = this.store.read(id, off, len, this.u8, dst);
+      } catch (e) {
+        // The persistent store broke under us (its files deleted, the disk gone): carry on in memory.
+        if (this.store.kind !== 'opfs' || attempt >= 2) throw e;
+        this.log('[io] cache read failed (' + e.message + '): caching in memory from now on');
+        this.swapStore(new MemoryStore({ files: this.files, maxBytes: this.opts.memoryCacheBytes }));
+        continue;
+      }
       // The blocks are pinned, but a store can still lose a fetch (a failed disk write): then fetch again.
-      if (this.store.read(id, off, len, this.u8, dst) === len) break;
+      if (copied === len) break;
       if (attempt >= 3) throw new Error('blocks of ' + this.files.path(id) + ' keep disappearing from the cache');
     }
     if (waited) {
@@ -277,12 +299,26 @@ export class IoCore {
     }
     while (tail !== head) {
       const e = cw + ioHintWord(this.slotCap, tail & (cap - 1));
-      const lf = Atomics.load(a, e + HINT_LEN_FLAGS);
-      if (!lf) break;   // claimed but not written yet; its producer rings the doorbell when it is
+      const want = (tail + 1) | 0;
+      const s1 = Atomics.load(a, e + HINT_SEQ);
+      if (s1 !== want) {
+        // A published hint of a later lap: this one was overwritten, skip it. Anything else (an earlier lap, or the
+        // "being written" marker) means its producer has not finished: it rings the doorbell when it has.
+        if (((s1 - want) & (cap - 1)) === 0 && ((s1 - want) | 0) > 0) {
+          this.stats.hintsDropped++;
+          tail = (tail + 1) >>> 0;
+          continue;
+        }
+        break;
+      }
       const id = a[e + HINT_FILE];
       const off = (a[e + HINT_OFF_LO] >>> 0) + (a[e + HINT_OFF_HI] >>> 0) * 4294967296;
-      Atomics.store(a, e + HINT_LEN_FLAGS, 0);
+      const lf = a[e + HINT_LEN_FLAGS];
       tail = (tail + 1) >>> 0;
+      if (Atomics.load(a, e + HINT_SEQ) !== s1) {   // overwritten while we read it
+        this.stats.hintsDropped++;
+        continue;
+      }
       this.stats.hints++;
       // Hints are advisory: a torn or stale entry costs at most a useless fetch.
       if (!this.files.valid(id) || off >= this.files.size(id)) continue;
@@ -365,9 +401,18 @@ export class IoCore {
     };
   }
 
-  close() {
+  // Replaces the block store, e.g. while the page is hidden (the persistent store is released for other tabs). Fetches
+  // still writing into the old store fail and are made again.
+  swapStore(store) {
+    const old = this.store;
+    this.store = store;
+    old.close();
+  }
+
+  // Returns the store lock's release function when keepLock is set (see OpfsStore.close).
+  close({ keepLock = false } = {}) {
     this.closed = true;
-    this.store.close();
+    return this.store.close({ keepLock });
   }
 }
 

@@ -132,7 +132,7 @@ export async function start(opts) {
   let input = null;
   engine.onmessage = ({ data: m }) => {
     if (m?.type === 'rangeplay:input') {
-      input = new RecordRing(m.memory, m.ringOffset);
+      input = new RecordRing(m.memory.buffer ?? m.memory, m.ringOffset);
       pushResize();
     } else if (m?.type === 'rangeplay:app') emit('onMessage', m.message);
   };
@@ -179,7 +179,10 @@ export async function start(opts) {
     }, { passive: false }],
     [canvas, 'contextmenu', (e) => e.preventDefault()],
     [canvas, 'blur', () => push(EV_BLUR, 0, 0, 0, 0, 0, 0)],
-    [globalThis, 'pagehide', () => io.postMessage({ type: 'close' })],
+    // Release the persistent cache while the page is hidden or going away (the next page, or another tab, can take it),
+    // and take it back if the page returns from the back/forward cache.
+    [globalThis, 'pagehide', () => io.postMessage({ type: 'suspend' })],
+    [globalThis, 'pageshow', (e) => { if (e.persisted) io.postMessage({ type: 'resume' }); }],
   ];
   for (const [target, name, fn, o] of listeners) target.addEventListener(name, fn, o);
 
@@ -196,11 +199,14 @@ export async function start(opts) {
   });
   ro.observe(canvas);
 
-  const stop = () => {
+  // Stops everything; resolves once the cache has written its journal (or after a second).
+  const stop = async () => {
     ro.disconnect();
     for (const [target, name, fn, o] of listeners) target.removeEventListener(name, fn, o);
-    io.postMessage({ type: 'close' });
-    for (const w of [engine, gpu, io]) w.terminate();
+    engine.terminate();
+    gpu.terminate();
+    await Promise.race([ask(io, 'close', 'closed'), new Promise((r) => setTimeout(r, 1000))]);
+    io.terminate();
   };
 
   return {

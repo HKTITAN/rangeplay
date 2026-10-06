@@ -3,7 +3,7 @@
 
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { copyFile, link, mkdir, readdir, stat, writeFile } from 'node:fs/promises';
+import { copyFile, link, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { MANIFEST_FORMAT, objectPath } from '../src/shared/manifest.js';
 
@@ -29,12 +29,11 @@ function hashFile(path) {
   });
 }
 
-async function exists(path) {
+async function sizeOf(path) {
   try {
-    await stat(path);
-    return true;
+    return (await stat(path)).size;
   } catch {
-    return false;
+    return -1;
   }
 }
 
@@ -52,10 +51,17 @@ export async function pack({ src, out, name, blockSize = 4096, dataPath = 'data/
     if (seen.has(hash)) continue;
     seen.add(hash);
     const dest = join(out, 'data', ...objectPath(hash).split('/'));
-    if (!(await exists(dest))) {
+    // An object of the right size is complete: objects are only ever written whole (copied, then renamed).
+    if ((await sizeOf(dest)) !== size) {
       await mkdir(join(dest, '..'), { recursive: true });
-      if (hardlink) await link(full, dest).catch(() => copyFile(full, dest));
-      else await copyFile(full, dest);
+      const tmp = dest + '.tmp-' + process.pid;
+      // --link saves space, but then editing a source file changes a published, "immutable" object: re-pack after edits.
+      if (hardlink) await link(full, tmp).catch(() => copyFile(full, tmp));
+      else await copyFile(full, tmp);
+      await rename(tmp, dest).catch(async (e) => {
+        await rm(tmp, { force: true });
+        throw e;
+      });
       stored += size;
       objects++;
     }
