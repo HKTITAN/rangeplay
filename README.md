@@ -4,7 +4,10 @@
 data from any CDN while it plays. There are no game servers and no data-center GPUs, and nothing is video-encoded.
 The network carries game data once, then mostly serves cache hits.
 
-![tile-world: a 144 MB landscape streamed into the browser as you look at it](docs/tile-world.jpg)
+**[Try the demo](https://rangeplay.vercel.app)** (needs a current Chromium-based browser for WebGPU; others fall back to
+a 2D canvas).
+
+[![tile-world: a 144 MB landscape streamed into the browser as you look at it](docs/tile-world.jpg)](https://rangeplay.vercel.app)
 
 <sub>The demo, [`examples/tile-world`](examples/tile-world): 144 MB of terrain in 36 archive files. On the dev
 server's simulated network (40 ms latency, 3 MB/s per response) its engine starts in 0.6 s on an empty cache, 2.4 s
@@ -142,7 +145,8 @@ rp_hint(ctl, file_id, next_offset, next_len, 0);
 npx rangeplay bootset merge rec1.json rec2.json -o dist/bootset.json
 ```
 
-**5. Deploy** to any static host or CDN that serves byte ranges. The page needs cross-origin isolation headers, and
+**5. Deploy** to any static host or CDN that serves byte ranges. (The demo itself is deployed this way: see
+[`vercel.json`](vercel.json) and [`scripts/build-site.js`](scripts/build-site.js).) The page needs cross-origin isolation headers, and
 the objects need immutable caching. `rangeplay headers <cloudflare|netlify|nginx|caddy|vercel>` prints the
 configuration for that host; [docs/deploying.md](docs/deploying.md) has the details.
 
