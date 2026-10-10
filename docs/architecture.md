@@ -89,6 +89,34 @@ Without it, start-up is a chain of blocking reads, one round trip each. In the d
 - The persistent cache keys blocks by content hash, not by path or version, so after an update the player keeps
   everything that did not change.
 
+**Packs for small files.** A large game can ship thousands of small files: shaders, scripts, configs. As objects of
+their own, each costs a request even when a boot set fetches them in parallel, and the host stores thousands of
+objects. `rangeplay pack --pack-small 64k` stores files under 64 KB back to back in packs (format 2 in
+[protocol.md](protocol.md)). The IO worker reads a packed file as a range of its pack, so neighbouring files merge into
+one Range request, in the boot set and in the cache alike.
+
+- *Why not a batch endpoint?* A server could take a list of ranges of many files and answer them in one response. That
+  needs code on the server, and rangeplay runs on any static host. Packs get the same effect from plain Range requests,
+  and the CDN can cache them.
+- *Where a pack ends depends on paths, not on running totals.* A pack ends before a file whose path hashes to a
+  multiple of a stride, chosen so that packs average a quarter of `--pack-max` (4 MB by default). If packs were filled
+  up to the cap instead, one file that grew would shift every pack after it, and an update would invalidate all of
+  them. This way an update changes the pack of the file that changed, and rarely the next one.
+- `--order bootset.json` lays packs out in the order of first touch, so start-up reads sit next to each other.
+- A read that continues the previous read of the same pack starts read-ahead whatever its size: that is a loader
+  walking through small files in order, which then finds the next files already fetched.
+- A pack that would hold one file is left out: that file keeps its own object.
+
+On the dev server's simulated network (40 ms latency, 3 MB/s per response), loading 600 files of 1 to 24 KB, out of
+2,000, one after another on one thread:
+
+| Layout                       | Without a boot set        | With a boot set        | Objects on the host |
+| ---------------------------- | ------------------------- | ---------------------- | ------------------- |
+| One object per file          | 35.7 s, 600 requests      | 2.2 s, 600 requests    | 2,001               |
+| Packs (`--pack-small 64k`)   | 3.0 s, 263 requests       | 0.5 s, 19 requests     | 20                  |
+
+The cost: changing one small file re-downloads its pack (up to `--pack-max`), not just the file.
+
 **Append-only store with a journal.** `data.bin` only grows: a fetch reserves room at the end and streams into it.
 `journal.bin` records which block lives where, and is written only after the data it points to is flushed. Entries
 are 32 bytes, so none straddles a disk page. Each carries a checksum and the store's generation (new at every reset),
@@ -111,6 +139,20 @@ frame all need an event loop, and WebGPU objects cannot move between threads. En
 worker owns the device and the canvas, and the engine writes commands into a ring. The GPU worker executes them,
 waits for an animation frame at each `OP_FRAME_END`, and counts the frame as done. Waiting for that count paces the
 engine to the display: `beginFrame()` blocks while two frames are in flight.
+
+**A lost GPU device is replaced.** Drivers reset, the browser's GPU process crashes, laptops switch GPUs: WebGPU
+reports each as a lost device, and everything drawn with it stops. The GPU worker then requests a new device,
+reconfigures the canvas and runs the handlers' `setup()` again (with `ctx.restored` counting restorations), while
+commands wait in the ring. Handlers that draw what each frame brings, like the Doom and Quake examples, recover with
+no help; handlers that uploaded resources once must upload them again. A device lost twice within 10 s, or more than
+three times, is reported through `onError` instead, since retrying would only loop. The page hears of each loss and
+restoration (`onGpuLost`, `onGpuRestored`).
+
+**Say which GPU.** A black canvas looks the same whatever its cause. The GPU worker records the adapter (vendor,
+architecture, description), whether it is a software fallback, its features and key limits, why it fell back to the 2D
+canvas if it did, and counts uncaptured WebGPU errors (logging the first few, not one per frame). `game.gpu()` returns
+it, and `game.debug()` includes it. The browser check page (`examples/check/`) runs the same tests without a game, plus
+the on-device cache and the network path to the data, and gives the player a report to paste into a bug report.
 
 **Commands are yours.** rangeplay moves bytes and defines `OP_FRAME_END`. What the other opcodes mean is up to the
 engine's renderer and its handler module (see `examples/tile-world/gpu.js`). Translating an engine's renderer into

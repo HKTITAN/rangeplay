@@ -193,6 +193,27 @@ File ids are indices into `files`. The object for a file is `dataPath + hash[0..
 the manifest's URL. `hash` is the first 32 hex digits of the SHA-256 of the file's bytes. `version` changes whenever
 any file changes. `name` names the persistent cache on the player's device.
 
+### Format 2: packs
+
+`rangeplay pack --pack-small <size>` stores small files back to back in *packs*. Their manifests say
+`"format": "rangeplay-manifest@2"` and list the packs:
+
+```json
+{
+  "format": "rangeplay-manifest@2",
+  "packs": [["c41f…32 hex…", 1048213]],
+  "files": [["big.pak", 52428800, "ab12…"], ["shaders/water.wgsl", 2210, "77e0…", 0, 40960]]
+}
+```
+
+A pack is `[hash, size]`, and its object is named after the hash of its bytes like any other. A file entry with five
+fields lives in a pack: `[path, size, hash, pack index, offset]`, and its bytes are bytes `offset` to
+`offset + size - 1` of that pack. `hash` is still the hash of the file's own bytes, so tools can check each file. A
+file with three fields has an object of its own. Packs hold no padding, and identical files share one location.
+
+The engine sees no difference: file ids, sizes and reads are the same as in format 1. `rangeplay pack` writes format 1
+whenever nothing ends up in a pack, so manifests stay readable by older runtimes unless packs are used.
+
 ## Boot set
 
 ```json

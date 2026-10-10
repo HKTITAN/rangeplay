@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rangeplay browser check</title>
+<meta name="description" content="Tests whether this browser and device can run games built on rangeplay, and makes a report to paste into a bug report.">
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; --bg: #0b0d12; --card: #141821; --line: rgba(255,255,255,.1); --text: #e9ecf2; --dim: #9aa3b2;
+    --accent: #7cb7ff; --ok: #6fd39a; --warn: #f2c46d; --fail: #ff8a80; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 28px; line-height: 1.2; margin: 0 0 8px; }
+  p.lede { color: var(--dim); margin: 0 0 22px; }
+  #verdict { margin: 0 0 18px; padding: 12px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); font-weight: 600; }
+  #verdict[data-level="ok"] { border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+  #verdict[data-level="warn"] { border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  #verdict[data-level="fail"] { border-color: color-mix(in srgb, var(--fail) 45%, transparent); }
+  ul { list-style: none; margin: 0 0 22px; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+  li { display: grid; grid-template-columns: 4.2em 1fr; gap: 2px 12px; padding: 10px 14px; border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  .tag { grid-row: span 2; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding-top: 2px; }
+  .tag.ok { color: var(--ok); } .tag.warn { color: var(--warn); } .tag.fail { color: var(--fail); } .tag.info { color: var(--dim); }
+  .what { font-weight: 600; }
+  .detail { color: var(--dim); font-size: 14px; overflow-wrap: anywhere; }
+  button { font: inherit; font-weight: 600; color: var(--accent); background: transparent; border: 1px solid rgba(124,183,255,.45);
+    border-radius: 999px; padding: 8px 16px; cursor: pointer; transition: background-color 150ms cubic-bezier(.25,1,.5,1); }
+  button:hover { background: rgba(124,183,255,.12); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  pre { margin: 14px 0 0; padding: 12px 14px; background: #07090d; border: 1px solid var(--line); border-radius: 10px; font-size: 12.5px;
+    line-height: 1.45; overflow: auto; max-height: 420px; color: var(--dim); }
+  footer { margin-top: 28px; color: var(--dim); font-size: 14px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Can this browser run rangeplay?</h1>
+  <p class="lede">This page tests what rangeplay games need on this device: shared memory, workers, the on-device cache, WebGPU and the
+  network path to the game data. Nothing is sent anywhere. If a game does not start, copy the report into your bug report.</p>
+  <p id="verdict" role="status" aria-live="polite">Checking…</p>
+  <ul id="checks"></ul>
+  <button id="copy" type="button">Copy report</button>
+  <pre id="report" aria-label="Report"></pre>
+  <footer><a href="/">rangeplay demos</a> · <a href="https://github.com/HKTITAN/rangeplay/issues">Report a problem</a></footer>
+</main>
+<script type="module" src="./check.js"></script>
+</body>
+</html>

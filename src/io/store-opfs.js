@@ -50,9 +50,10 @@ export class OpfsStore {
     this.flushTimer = 0;
     this.readIntoShared = true;
     this.overflow = new MemoryStore({ files, maxBytes: overflowBytes });   // used once the disk store is full
-    // files with identical bytes share their cached blocks
+    // objects with identical bytes share their cached blocks (store ids: packed files have none, their pack has one)
     this.byContent = new Map();
-    for (let id = 0; id < files.count; id++) {
+    for (let id = 0; id < files.objects; id++) {
+      if (files.packed(id)) continue;
       const [lo, hi] = files.contentKey(id), k = hi + ':' + lo;
       if (!this.byContent.has(k)) this.byContent.set(k, []);
       this.byContent.get(k).push(id);

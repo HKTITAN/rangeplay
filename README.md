@@ -161,6 +161,9 @@ see a first visit again, and add `?nobootset=1` to see what the boot set saves. 
   the Emscripten build, a recorded boot set and background install. Read this one if you have a C or C++ engine.
 - **[examples/tile-world](examples/tile-world):** an engine written in JavaScript. It covers archives with tables of
   contents, a streamer thread, read hints, WebGPU drawing through the command ring, and the IO statistics.
+- **[examples/check](examples/check):** the browser check. It tests what games need on the player's device (shared
+  memory, the on-device cache, WebGPU and its adapter, byte ranges to the data) and makes a report to paste into an
+  issue. The demos link to it when they cannot start.
 
 ## Using it
 
@@ -172,6 +175,12 @@ the `rangeplay/*` imports, or import `src/host.js` and `src/engine.js` by relati
 ```bash
 npx rangeplay pack ./gamedata --out ./dist --name my-game
 ```
+
+If the game has hundreds of small files (shaders, scripts, configs), add `--pack-small 64k`: files under 64 KB go into
+packs of a few MB, so loading hundreds of them costs a handful of requests instead of one each. In our benchmark, 600
+small files loaded in 0.5 s instead of 2.2 s, and the host stored 20 objects instead of 2,001
+([architecture.md](docs/architecture.md#decisions-and-why), "Packs for small files"). `rangeplay inspect` tells you
+when a manifest would gain from it.
 
 **2. Start it from the page.**
 
@@ -215,6 +224,10 @@ rp_hint(ctl, file_id, next_offset, next_len, 0);
   system tick.
 - `onStall(info)`: called with `game.debug()` if loading stops making progress.
 - `game.audio()`: the audio ring's level and underruns.
+- `game.gpu()`: which GPU the game draws with (vendor, architecture, software fallback or not), why it fell back to the
+  2D canvas if it did, and how many WebGPU errors and lost devices there were. Attach it to bug reports.
+- `onGpuLost(info)`, `onGpuRestored(gpu)`: a lost WebGPU device (a driver reset, a GPU process crash) is replaced and
+  the GPU handlers' `setup()` runs again. Handlers that upload resources once must upload them again then.
 
 An engine gets an audio ring with `connect({ audio: { frames, channels, rate } })` in JavaScript, or `rp_audio_*` in C.
 
@@ -231,6 +244,21 @@ npx rangeplay bootset merge rec1.json rec2.json -o dist/bootset.json
 the objects need immutable caching. `rangeplay headers <cloudflare|netlify|nginx|caddy|vercel>` prints the
 configuration for that host; [docs/deploying.md](docs/deploying.md) has the details.
 
+Check the folder before you upload it, and the host after:
+
+```bash
+npx rangeplay verify dist
+```
+
+```bash
+npx rangeplay doctor https://example.com/my-game/
+```
+
+`verify` checks that every object exists and hashes to its name. `doctor` checks what makes a game fail to start or
+start slowly, and says what to change: isolation headers, byte ranges, an HTML fallback page served instead of data,
+compression on the fly, caching, CORS and the boot set. `rangeplay mirror <manifest URL> --out <dir>` makes a verified,
+resumable copy of a published game, to move it to another host.
+
 ## Browser requirements
 
 | Needs                                   | For                                       | Without it                                                 |
@@ -245,14 +273,18 @@ configuration for that host; [docs/deploying.md](docs/deploying.md) has the deta
 
 Tested so far: Chromium 152 on Windows (both demos, on WebGPU and on the 2D fallback) and Node 20 to 26 (the test
 suite).
-Firefox and Safari are untested; reports are welcome.
+Firefox and Safari are untested; reports are welcome. The [browser check](https://rangeplay.vercel.app/examples/check/)
+tests all of the above on a player's device and makes a report to paste into an issue.
 
 ## Status and limits
 
-This is version 0.1, and experimental. What is tested:
+This is version 0.2, and experimental. What is tested:
 
 - The IO path end to end in Node: real HTTP, engine threads in `worker_threads`, both stores, 503 storms, stalled
-  and misbehaving servers, damaged caches, cache reuse across sessions and versions, boot sets and hints.
+  and misbehaving servers, damaged caches, cache reuse across sessions and versions, boot sets and hints, packs.
+- The tools against real and deliberately broken hosts: `verify` on damaged, truncated and missing objects, `mirror`
+  resuming interrupted and damaged downloads, `doctor` on hosts that drop isolation headers, ignore ranges, compress
+  responses or answer with an HTML fallback page.
 - The C header natively (6 threads, 18,000 reads; 200,000 ring records) with `-Wall -Wextra -Werror`.
 - Real engines through the C header: the Doom and Quake engines built with Emscripten in CI, and played in Chromium.
   All 54 LibreQuake maps load and its three demos play in a headless build of the same engine.
@@ -262,7 +294,7 @@ Not done yet:
 - Music in the Freedoom and LibreQuake examples. Their sound effects play; Doom's music is MIDI and needs a
   synthesizer, and LibreQuake's is Ogg Vorbis, which the 1996 Quake engine cannot play.
 - Store compaction. Space held by old versions is only reclaimed when more than half of a large store is dead.
-- Bundling small files into packs, per-block compression, and offline start (a service worker for the page itself).
+- Per-block compression, and offline start (a service worker for the page itself).
 
 ## Prior art
 

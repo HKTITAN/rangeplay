@@ -7,6 +7,7 @@ const q = new URLSearchParams(location.search);
 const map = q.get('map');
 const $ = (id) => document.getElementById(id);
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
+const CHECK = 'Does this browser have what the game needs? Test it: ' + new URL('../check/', location.href).href;
 const canvas = $('view'), consoleEl = $('console');
 let total = 0;
 
@@ -55,6 +56,7 @@ try {
     onLog: (line) => console.log(line),
     onError: (e) => {
       print('ERROR: ' + e.message);
+      print(CHECK);
       consoleEl.hidden = false;
     },
   });
@@ -66,4 +68,5 @@ try {
   };
 } catch (e) {
   print('ERROR: ' + e.message);
+  print(CHECK);
 }
