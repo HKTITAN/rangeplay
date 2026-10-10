@@ -17,7 +17,8 @@
 // pointerLock (a click on the canvas locks the pointer: raw mouse movement for camera control), audio: false (ignore an
 // engine's audio ring), fineTimers (keep a 1 ms timer pending on the page: Chrome on Windows otherwise rounds short
 // Atomics.wait timeouts in engine threads up to the 15.6 ms system tick), stallMs + onStall (called with debug() when
-// nothing has happened for that long before the first frame; default 30 s).
+// nothing has happened for that long before the first frame; default 30 s), onGpuLost({ reason, message }) and
+// onGpuRestored(gpu) (the WebGPU device was lost and replaced: see gpu-worker.js), onError(error).
 
 import {
   EV_BLUR, EV_KEY_DOWN, EV_KEY_UP, EV_POINTER_DOWN, EV_POINTER_MOVE, EV_POINTER_UP, EV_RESIZE, EV_WHEEL, keyCodeIndex,
@@ -70,7 +71,7 @@ export async function start(opts) {
   const gpu = new Worker(new URL('./gpu-worker.js', here), { type: 'module', name: 'rangeplay-gpu' });
   const engine = new Worker(new URL(opts.engine, location.href), { type: 'module', name: 'engine' });
 
-  const state = { stats: null, backend: null, store: null, firstFrameMs: null };
+  const state = { stats: null, backend: null, gpu: null, store: null, firstFrameMs: null };
   let resolveReady, rejectReady;
   const ready = new Promise((res2, rej) => {
     resolveReady = res2;
@@ -92,7 +93,15 @@ export async function start(opts) {
   gpu.onmessage = ({ data: m }) => {
     if (m.type === 'ready') {
       state.backend = m.backend;
-      resolveReady({ backend: m.backend });
+      state.gpu = m.gpu;
+      if (m.gpu?.why2d && !opts.prefer2d) emit('onLog', '[gpu] drawing on the 2D canvas: ' + m.gpu.why2d);
+      resolveReady({ backend: m.backend, gpu: m.gpu });
+    } else if (m.type === 'gpu-lost') {
+      emit('onLog', '[gpu] device lost: ' + (m.message || m.reason));
+      emit('onGpuLost', { reason: m.reason, message: m.message });
+    } else if (m.type === 'gpu-restored') {
+      state.gpu = m.gpu;
+      emit('onGpuRestored', m.gpu);
     } else if (m.type === 'first-frame') emit('onFirstFrame', (state.firstFrameMs = performance.now() - t0));
     else if (m.type === 'debug') gpuDebug.shift()?.(m.state);
     else if (m.type === 'log') emit('onLog', m.text);
@@ -290,10 +299,15 @@ export async function start(opts) {
   const controller = {
     files,
     capabilities: caps,
-    ready,                                   // resolves with { backend } once the GPU worker runs
+    ready,                                   // resolves with { backend, gpu } once the GPU worker runs
     stats: () => state.stats,
     store: () => state.store,
     backend: () => state.backend,
+    // The GPU as the worker found it: adapter (vendor, architecture, description), features, key limits, why2d (why
+    // not WebGPU), and counters for uncaptured errors and lost and restored devices. Worth attaching to bug reports.
+    gpu: () => state.gpu,
+    // Loses the WebGPU device on purpose, as a driver reset would: to test that your GPU handlers recover.
+    simulateGpuLoss: () => gpu.postMessage({ type: 'simulate-gpu-loss' }),
     firstFrameMs: () => state.firstFrameMs,   // from start() to the first frame on screen
     audio: () => audio.stats(),               // the engine's audio ring: rate, frames written and played, underruns
     audioRing: () => audio.ring?.info ?? null, // the AudioRing itself (shared memory), for meters and visualisers

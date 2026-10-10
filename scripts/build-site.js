@@ -26,6 +26,7 @@ const EXAMPLES = {
   'tile-world': ['index.html', 'main.js', 'engine.js', 'streamer.js', 'gpu.js', 'world.js', 'dist'],
   freedoom: ['index.html', 'main.js', 'engine.js', 'gpu.js', 'wasm', 'bootset-1.json', 'bootset-2.json', 'dist'],
   quake: ['index.html', 'main.js', 'engine.js', 'gpu.js', 'wasm', 'bootset.json', 'bootset-start.json', 'dist'],
+  check: ['index.html', 'check.js'],
 };
 for (const [name, entries] of Object.entries(EXAMPLES)) {
   for (const entry of entries) {
@@ -99,7 +100,8 @@ await writeFile(join(site, 'index.html'), `<!doctype html>
       </div>
     </a>
   </div>
-  <footer>Source, docs and the runtime: <a href="https://github.com/HKTITAN/rangeplay">github.com/HKTITAN/rangeplay</a> (MIT).
+  <footer>A demo does not start? <a href="/examples/check/">Check this browser</a>.
+  Source, docs and the runtime: <a href="https://github.com/HKTITAN/rangeplay">github.com/HKTITAN/rangeplay</a> (MIT).
   Freedoom and LibreQuake data: BSD-3-Clause (LibreQuake game code: GPL-2.0). Doom and Quake engines: GPL-2.0.</footer>
 </main>
 </body>

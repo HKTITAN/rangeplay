@@ -7,6 +7,7 @@ const phase = q.get('wad') === '1' ? 1 : 2;
 const iwad = `freedoom${phase}.wad`;
 const $ = (id) => document.getElementById(id);
 const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
+const CHECK = 'Does this browser have what the game needs? Test it: ' + new URL('../check/', location.href).href;
 const canvas = $('view'), consoleEl = $('console');
 let total = 0;
 
@@ -50,7 +51,10 @@ try {
       canvas.focus();
     },
     onLog: (line) => console.log(line),
-    onError: (e) => print('ERROR: ' + e.message),
+    onError: (e) => {
+      print('ERROR: ' + e.message);
+      print(CHECK);
+    },
   });
   total = game.files.size(game.files.id(iwad));
   window.rangeplay = game;   // for the console: rangeplay.takeRecording() with ?record=1
@@ -60,4 +64,5 @@ try {
   };
 } catch (e) {
   print('ERROR: ' + e.message);
+  print(CHECK);
 }

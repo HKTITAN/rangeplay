@@ -61,8 +61,9 @@ export class IoCore {
 
   // ---- fetching blocks ----------------------------------------------------------------------------------------------
 
-  // Makes sure blocks first..last of file id are stored. cls: 'demand' (an engine thread waits), 'hint' (announced
-  // read), 'low' (read-ahead, speculative hint), 'boot' (boot set). Returns a promise, or null when nothing is missing.
+  // Makes sure blocks first..last of store id `id` (a file with an object of its own, or a pack: see manifest.js) are
+  // stored. cls: 'demand' (an engine thread waits), 'hint' (announced read), 'low' (read-ahead, speculative hint),
+  // 'boot' (boot set). Returns a promise, or null when nothing is missing.
   ensure(id, first, last, cls) {
     last = Math.min(last, this.files.blocks(id) - 1);
     if (first > last) return null;
@@ -149,9 +150,11 @@ export class IoCore {
 
   // A read that continues the previous read of the same file (and is not tiny) fetches the bytes after it too, with a
   // window that doubles on every such read. Small or scattered reads (archive tables of contents) fetch only themselves.
+  // In a pack, a read that continues the previous one is a loader walking through small files in the pack's order:
+  // that counts as sequential whatever its size.
   #readAhead(id, off, len, lastBlock) {
     const st = this.seq.get(id) || { end: -1, ahead: 0 };
-    const sequential = off === st.end && len >= this.opts.readAheadMinRead;
+    const sequential = off === st.end && (len >= this.opts.readAheadMinRead || this.files.isPack(id));
     st.ahead = sequential ? Math.min(this.opts.readAheadMax, st.ahead ? st.ahead * 2 : this.opts.readAheadFirst) : 0;
     st.end = off + len;
     this.seq.set(id, st);
@@ -224,12 +227,14 @@ export class IoCore {
             this.stats.reads++;
             this.stats.bytesRead += len;
             if (this.recording) this.#recordTouch(id, off, len);
-            const first = Math.floor(off / this.bs), last = Math.floor((off + len - 1) / this.bs);
-            this.store.pin?.(id, first, last);
+            // From here on: the object that holds the bytes (the file's own, or its pack) and the offset in it.
+            const sid = this.files.sid(id), at = off + this.files.base(id);
+            const first = Math.floor(at / this.bs), last = Math.floor((at + len - 1) / this.bs);
+            this.store.pin?.(sid, first, last);
             try {
-              await this.#fetchAndCopy(id, off, len, dst, first, last, flags, t0);
+              await this.#fetchAndCopy(sid, at, len, dst, first, last, flags, t0);
             } finally {
-              this.store.unpin?.(id, first, last);
+              this.store.unpin?.(sid, first, last);
             }
             result = len;
           }
@@ -326,7 +331,8 @@ export class IoCore {
       if (!this.files.valid(id) || off >= this.files.size(id)) continue;
       const len = Math.min(lf & HINT_LEN_MASK, this.files.size(id) - off);
       if (len <= 0) continue;
-      const p = this.ensure(id, Math.floor(off / this.bs), Math.floor((off + len - 1) / this.bs), lf & HINT_SPECULATIVE ? 'low' : 'hint');
+      const at = off + this.files.base(id);
+      const p = this.ensure(this.files.sid(id), Math.floor(at / this.bs), Math.floor((at + len - 1) / this.bs), lf & HINT_SPECULATIVE ? 'low' : 'hint');
       if (p) {
         this.stats.hintsFetched++;
         p.catch((e) => { if (!(e instanceof DroppedError)) this.log('[io] hinted fetch failed: ' + e.message); });
@@ -337,23 +343,37 @@ export class IoCore {
 
   // ---- boot set -----------------------------------------------------------------------------------------------------
 
-  // Fetches the ranges of a boot set in order, bootConcurrency at a time, at low priority. Returns when done.
-  async prefetchBootset(set) {
-    validateBootset(set);
+  // Turns file ranges ([path or id, [[start, endInclusive], ...]] in order of first touch) into runs of blocks of the
+  // objects that hold them, in order of each object's first touch. Ranges are merged per object, so the ranges of small
+  // files that sit next to each other in a pack become one request.
+  #objectRuns(fileRanges, gap) {
+    const byObject = new Map();
+    for (const [file, ranges] of fileRanges) {
+      const id = typeof file === 'string' ? this.files.id(file) : file;
+      if (!this.files.valid(id)) continue;   // not in this version
+      const size = this.files.size(id), sid = this.files.sid(id), base = this.files.base(id);
+      let list = byObject.get(sid);
+      if (!list) byObject.set(sid, (list = []));
+      for (const [s, e] of ranges) if (s < size) list.push([base + s, base + Math.min(e, size - 1)]);
+    }
     const maxRun = Math.max(1, Math.floor(this.opts.maxRunBytes / this.bs));
     const runs = [];
     let bytes = 0;
-    for (const [path, ranges] of set.files) {
-      const id = this.files.id(path);
-      if (id < 0) continue;   // not in this version
-      const lastBlock = this.files.blocks(id) - 1;
-      for (const [s, e] of mergeRanges(ranges, this.opts.bootGapBytes)) {
-        if (s > this.files.size(id) - 1) continue;
+    for (const [sid, list] of byObject) {
+      const lastBlock = this.files.blocks(sid) - 1;
+      for (const [s, e] of mergeRanges(list, gap)) {
         const a = Math.floor(s / this.bs), b = Math.min(Math.floor(e / this.bs), lastBlock);
-        for (let k = a; k <= b; k += maxRun) runs.push([id, k, Math.min(b, k + maxRun - 1)]);
-        bytes += Math.min(e, this.files.size(id) - 1) - s + 1;
+        for (let k = a; k <= b; k += maxRun) runs.push([sid, k, Math.min(b, k + maxRun - 1)]);
+        bytes += e - s + 1;
       }
     }
+    return { runs, bytes };
+  }
+
+  // Fetches the ranges of a boot set in order, bootConcurrency at a time, at low priority. Returns when done.
+  async prefetchBootset(set) {
+    validateBootset(set);
+    const { runs, bytes } = this.#objectRuns(set.files, this.opts.bootGapBytes);
     const boot = this.stats.boot;
     Object.assign(boot, { runs: runs.length, done: 0, bytes, state: 'running' });
     const t0 = now();
@@ -382,13 +402,7 @@ export class IoCore {
     const ids = paths === true
       ? [...Array(this.files.count).keys()]
       : paths.map((p) => this.files.id(p)).filter((id) => id >= 0);
-    const maxRun = Math.max(1, Math.floor(this.opts.maxRunBytes / this.bs));
-    const runs = [];
-    let bytes = 0;
-    for (const id of ids) {
-      bytes += this.files.size(id);
-      for (let k = 0, n = this.files.blocks(id); k < n; k += maxRun) runs.push([id, k, Math.min(n - 1, k + maxRun - 1)]);
-    }
+    const { runs, bytes } = this.#objectRuns(ids.map((id) => [id, [[0, this.files.size(id) - 1]]]), 0);
     const fill = (this.stats.fill = { runs: runs.length, done: 0, bytes, state: 'running' });
     let next = 0;
     const worker = async () => {

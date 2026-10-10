@@ -8,9 +8,12 @@ Thanks for helping. A few things keep this project easy to work on:
   `npm test` checks that they agree. Changing an existing number means a new `LAYOUT_VERSION`.
 - **Tests.** `npm test` runs everything in Node: real HTTP, engine threads in `worker_threads`, the persistent store
   on Node files. `npm run test:native` builds and runs the C protocol test (any C11 compiler with pthreads; set `CC`).
-  A change to IO behaviour should come with a test in `test/io.test.js`.
-- **Browser reports.** Say which browser, version and OS, whether the page was cross-origin isolated, and include the
-  `onStats` snapshot and console lines starting with `[io]`, `[store]`, `[fetch]` or `[gpu]`.
+  A change to IO behaviour should come with a test in `test/io.test.js` (packs: `test/packs.test.js`; the command line
+  tools: `test/tools.test.js`).
+- **Browser reports.** Paste the report from the browser check (`examples/check/`, or
+  <https://rangeplay.vercel.app/examples/check/>). For a game that starts but misbehaves, add `game.gpu()`, the
+  `onStats` snapshot and console lines starting with `[io]`, `[store]`, `[fetch]` or `[gpu]`. For a deployment, add the
+  output of `rangeplay doctor <url>`.
 
 ## Content
 

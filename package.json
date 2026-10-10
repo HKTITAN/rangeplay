@@ -1,6 +1,6 @@
 {
   "name": "rangeplay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Play-as-you-download for the web: run a native game engine in the browser and stream its data from any CDN with HTTP Range requests.",
   "type": "module",
   "license": "MIT",
@@ -30,7 +30,9 @@
     "./io-worker": "./src/io-worker.js",
     "./gpu-worker": "./src/gpu-worker.js",
     "./tools/pack": "./tools/pack.js",
-    "./tools/serve": "./tools/serve.js"
+    "./tools/serve": "./tools/serve.js",
+    "./tools/verify": "./tools/verify.js",
+    "./tools/doctor": "./tools/doctor.js"
   },
   "files": [
     "src",

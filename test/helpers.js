@@ -27,16 +27,18 @@ export class NodeHandle {
   close() { closeSync(this.fd); }
 }
 
-export async function makeDataset(sizes) {
+export async function makeDataset(sizes, packOptions = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'rangeplay-'));
   const src = join(dir, 'src'), dist = join(dir, 'dist');
-  await mkdir(join(src, 'sub'), { recursive: true });
   const contents = {};
   for (const [name, size] of Object.entries(sizes)) {
-    contents[name] = randomBytes(size);
-    await writeFile(join(src, ...name.split('/')), contents[name]);
+    // a Buffer stands for itself (identical contents), a number for that many random bytes
+    contents[name] = typeof size === 'number' ? randomBytes(size) : size;
+    const path = join(src, ...name.split('/'));
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, contents[name]);
   }
-  await pack({ src, out: dist, name: 'test' });
+  await pack({ src, out: dist, name: 'test', ...packOptions });
   return { dir, src, dist, contents, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
